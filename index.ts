@@ -582,7 +582,7 @@ const clawieTalkiePlugin = {
   id: "clawietalkie",
   name: "ClawieTalkie",
   description:
-    "Walkie-talkie voice interface — receives audio, transcribes via Whisper, gets AI response, returns TTS audio. Provides send_voice tool for proactive voice messages with push notifications.",
+    "Walkie-talkie voice interface — relays audio between the ClawieTalkie app and your OpenClaw agent.",
   configSchema: {
     jsonSchema: {
       type: "object",

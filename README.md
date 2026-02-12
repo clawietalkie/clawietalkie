@@ -2,6 +2,8 @@
 
 Walkie-talkie voice interface for your [OpenClaw](https://openclaw.ai) agent. Pairs with the ClawieTalkie iOS and macOS apps.
 
+This plugin relays audio between the app and your agent. Your agent handles transcription and speech generation — the plugin just passes audio back and forth.
+
 ## Install
 
 ```bash
@@ -11,8 +13,8 @@ openclaw plugins install clawietalkie
 Or from source:
 
 ```bash
-git clone https://github.com/say26/clawietalkie.git
-openclaw plugins install ./clawietalkie/openclaw-plugin
+git clone https://github.com/AlexanderZaytsev/clawietalkie-openclaw-plugin.git
+openclaw plugins install ./clawietalkie-openclaw-plugin
 ```
 
 Then restart OpenClaw:
@@ -23,8 +25,8 @@ openclaw restart
 
 ## What it does
 
-- **`/clawietalkie/talk`** — receives audio from the app, transcribes it, sends it to your agent, converts the response to speech, and returns the audio
-- **`send_voice` tool** — lets your agent proactively send voice messages to your phone via push notification
+- **`/clawietalkie/talk`** — receives audio from the app, passes it to your agent, returns the agent's audio response
+- **`send_voice` tool** — lets your agent proactively send voice messages to your device
 
 ## Configure the app
 
@@ -35,5 +37,5 @@ Open ClawieTalkie on your device and enter:
 
 ## Requirements
 
-- OpenClaw with TTS configured (OpenAI, ElevenLabs, or any supported provider)
-- ClawieTalkie app ([iOS](https://apps.apple.com/app/clawietalkie) / [macOS](https://github.com/say26/clawietalkie/releases))
+- OpenClaw agent with audio transcription and TTS capabilities
+- ClawieTalkie app ([iOS](https://apps.apple.com/app/clawietalkie) / [macOS](https://github.com/AlexanderZaytsev/clawietalkie/releases))

@@ -1,7 +1,7 @@
 {
   "name": "clawietalkie",
   "version": "0.1.0",
-  "description": "OpenClaw plugin for ClawieTalkie — walkie-talkie voice interface for AI agents",
+  "description": "OpenClaw plugin for ClawieTalkie — relays audio between the app and your agent",
   "openclaw": {
     "extensions": ["index.ts"]
   },
