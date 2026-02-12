@@ -1,0 +1,6 @@
+{
+  "id": "clawietalkie",
+  "name": "ClawieTalkie",
+  "description": "Walkie-talkie voice interface — receives audio, transcribes via Whisper, gets AI response, returns TTS audio. Provides send_voice tool for proactive voice messages with push notifications.",
+  "configSchema": { "type": "object", "additionalProperties": false, "properties": {} }
+}
