@@ -239,7 +239,7 @@ async function getAgentResponse(
 }
 
 /* ------------------------------------------------------------------ */
-/*  STT — Speech-to-Text                                              */
+/*  STT — Speech-to-Text (uses gateway's configured provider)         */
 /* ------------------------------------------------------------------ */
 
 async function transcribeAudio(
@@ -247,75 +247,18 @@ async function transcribeAudio(
   audioBuffer: Buffer,
   fileName: string,
 ): Promise<string> {
-  // Try ElevenLabs Scribe (key from TTS config)
-  const elevenLabsKey = api.config?.messages?.tts?.elevenlabs?.secretKey;
-  if (elevenLabsKey) {
-    try {
-      api.logger.info("[clawietalkie] STT via ElevenLabs Scribe...");
-      const formData = new FormData();
-      formData.append("file", new Blob([audioBuffer]), fileName);
-      formData.append("model_id", "scribe_v1");
-
-      const resp = await fetch("https://api.elevenlabs.io/v1/speech-to-text", {
-        method: "POST",
-        headers: { "xi-api-key": elevenLabsKey },
-        body: formData,
-        signal: AbortSignal.timeout(30000),
-      });
-
-      if (!resp.ok) {
-        const errText = await resp.text();
-        throw new Error(
-          "ElevenLabs STT failed (" + resp.status + "): " + errText,
-        );
-      }
-
-      const result = (await resp.json()) as any;
-      api.logger.info(
-        "[clawietalkie] STT result: " + (result.text || "").slice(0, 200),
-      );
-      return result.text;
-    } catch (e: any) {
-      api.logger.warn(
-        "[clawietalkie] ElevenLabs STT error, falling back: " +
-          (e.message || e),
-      );
-    }
+  const result = await api.runtime.stt.speechToText({
+    audioBuffer,
+    fileName,
+    cfg: api.config,
+  });
+  if (!result.success || !result.text) {
+    throw new Error("STT failed: " + (result.error || "no transcription"));
   }
-
-  // Fallback: OpenAI Whisper (only if real OpenAI, not OpenRouter)
-  const openaiKey = api.config?.llm?.openai?.apiKey || api.config?.llm?.apiKey;
-  const baseUrl = api.config?.llm?.openai?.baseUrl || api.config?.llm?.baseUrl || "";
-  if (openaiKey && !baseUrl.includes("openrouter")) {
-    api.logger.info("[clawietalkie] STT via OpenAI Whisper...");
-    const formData = new FormData();
-    formData.append("file", new Blob([audioBuffer]), fileName);
-    formData.append("model", "whisper-1");
-
-    const resp = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-      method: "POST",
-      headers: { Authorization: "Bearer " + openaiKey },
-      body: formData,
-      signal: AbortSignal.timeout(30000),
-    });
-
-    if (!resp.ok) {
-      const errText = await resp.text();
-      throw new Error(
-        "OpenAI Whisper failed (" + resp.status + "): " + errText,
-      );
-    }
-
-    const result = (await resp.json()) as any;
-    api.logger.info(
-      "[clawietalkie] STT result: " + (result.text || "").slice(0, 200),
-    );
-    return result.text;
-  }
-
-  throw new Error(
-    "No STT provider available. Configure ElevenLabs or set OPENAI_API_KEY.",
+  api.logger.info(
+    "[clawietalkie] STT result: " + (result.text || "").slice(0, 200),
   );
+  return result.text;
 }
 
 /* ------------------------------------------------------------------ */
