@@ -254,18 +254,24 @@ function getEnvVar(api: any, name: string): string | undefined {
 
 /** Default base URLs and models per provider. */
 const STT_DEFAULTS: Record<string, { baseUrl: string; model: string }> = {
-  elevenlabs: { baseUrl: "https://api.elevenlabs.io/v1", model: "scribe_v1" },
-  openai:     { baseUrl: "https://api.openai.com/v1",    model: "gpt-4o-mini-transcribe" },
-  groq:       { baseUrl: "https://api.groq.com/openai/v1", model: "whisper-large-v3" },
-  deepgram:   { baseUrl: "https://api.deepgram.com/v1",  model: "nova-3" },
+  elevenlabs: { baseUrl: "https://api.elevenlabs.io/v1", model: "scribe_v2" },
+  openai: {
+    baseUrl: "https://api.openai.com/v1",
+    model: "gpt-4o-mini-transcribe",
+  },
+  groq: {
+    baseUrl: "https://api.groq.com/openai/v1",
+    model: "whisper-large-v3",
+  },
+  deepgram: { baseUrl: "https://api.deepgram.com/v1", model: "nova-3" },
 };
 
 /** Env var fallback order (tried when pluginConfig.stt is not set). */
 const STT_ENV_FALLBACKS: { id: string; envKey: string }[] = [
   { id: "elevenlabs", envKey: "ELEVENLABS_API_KEY" },
-  { id: "openai",     envKey: "OPENAI_API_KEY" },
-  { id: "groq",       envKey: "GROQ_API_KEY" },
-  { id: "deepgram",   envKey: "DEEPGRAM_API_KEY" },
+  { id: "openai", envKey: "OPENAI_API_KEY" },
+  { id: "groq", envKey: "GROQ_API_KEY" },
+  { id: "deepgram", envKey: "DEEPGRAM_API_KEY" },
 ];
 
 /** Resolve STT provider from plugin config, falling back to env vars. */
@@ -297,7 +303,12 @@ function resolveSTTProvider(api: any): {
     const apiKey = getEnvVar(api, fb.envKey);
     if (!apiKey) continue;
     const defaults = STT_DEFAULTS[fb.id];
-    return { id: fb.id, apiKey, baseUrl: defaults.baseUrl, model: defaults.model };
+    return {
+      id: fb.id,
+      apiKey,
+      baseUrl: defaults.baseUrl,
+      model: defaults.model,
+    };
   }
   return null;
 }
@@ -332,9 +343,14 @@ async function transcribeElevenLabs(
 
   const raw = await res.text();
   let data: any;
-  try { data = JSON.parse(raw); } catch { throw new Error("ElevenLabs STT non-JSON response: " + raw.slice(0, 500)); }
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    throw new Error("ElevenLabs STT non-JSON response: " + raw.slice(0, 500));
+  }
   const text = data.text?.trim();
-  if (!text) throw new Error("ElevenLabs STT no text in response: " + raw.slice(0, 500));
+  if (!text)
+    throw new Error("ElevenLabs STT no text in response: " + raw.slice(0, 500));
   return text;
 }
 
@@ -795,7 +811,6 @@ function getSecretKey(api: any): string | null {
   );
 }
 
-
 function verifyAuth(req: IncomingMessage, api: any): boolean {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith("Bearer ")) return false;
@@ -804,7 +819,9 @@ function verifyAuth(req: IncomingMessage, api: any): boolean {
 
   const secretKey = getSecretKey(api);
   if (!secretKey) {
-    api.logger.warn("[clawietalkie] No secretKey configured — rejecting all requests");
+    api.logger.warn(
+      "[clawietalkie] No secretKey configured — rejecting all requests",
+    );
     return false;
   }
 
@@ -816,7 +833,8 @@ async function persistSecretKey(api: any, key: string): Promise<void> {
     const cfg = api.config;
     if (!cfg.plugins) cfg.plugins = {};
     if (!cfg.plugins.entries) cfg.plugins.entries = {};
-    if (!cfg.plugins.entries.clawietalkie) cfg.plugins.entries.clawietalkie = {};
+    if (!cfg.plugins.entries.clawietalkie)
+      cfg.plugins.entries.clawietalkie = {};
     if (!cfg.plugins.entries.clawietalkie.config)
       cfg.plugins.entries.clawietalkie.config = {};
     cfg.plugins.entries.clawietalkie.config.secretKey = key;
@@ -870,7 +888,9 @@ const clawieTalkiePlugin = {
       const generated = "sk-ct-" + randomBytes(16).toString("hex");
       activeSecretKey = generated;
       persistSecretKey(api, generated);
-      api.logger.info("[clawietalkie] Auto-generated and persisted secret key.");
+      api.logger.info(
+        "[clawietalkie] Auto-generated and persisted secret key.",
+      );
     } else {
       activeSecretKey = existingKey;
     }
@@ -918,9 +938,7 @@ const clawieTalkiePlugin = {
         const truncated = ttsText.slice(0, 150);
         const lastSentence = truncated.search(/[.!?)]\s*[^.!?)]*$/);
         ttsText =
-          lastSentence > 30
-            ? truncated.slice(0, lastSentence + 1)
-            : truncated;
+          lastSentence > 30 ? truncated.slice(0, lastSentence + 1) : truncated;
         api.logger.warn(
           "[clawietalkie] Truncated response from " +
             agentResponse.length +
@@ -988,7 +1006,9 @@ const clawieTalkiePlugin = {
           let audioData: Buffer;
           const gatewayBody = (req as any).body;
           if (gatewayBody && gatewayBody.length > 0) {
-            audioData = Buffer.isBuffer(gatewayBody) ? gatewayBody : Buffer.from(gatewayBody);
+            audioData = Buffer.isBuffer(gatewayBody)
+              ? gatewayBody
+              : Buffer.from(gatewayBody);
           } else {
             audioData = await readBodyRaw(req);
           }
@@ -1000,13 +1020,22 @@ const clawieTalkiePlugin = {
 
           api.logger.info(
             "[clawietalkie] /talk received " +
-              audioData.length + " bytes" +
-              " source=" + audioSource +
-              (senderDeviceId ? " device=" + senderDeviceId.substring(0, 8) + "..." : ""),
+              audioData.length +
+              " bytes" +
+              " source=" +
+              audioSource +
+              (senderDeviceId
+                ? " device=" + senderDeviceId.substring(0, 8) + "..."
+                : ""),
           );
 
           // Synchronous: process STT → AI → TTS and return audio in response
-          const result = await processTalkAudio(audioData, fileName, audioSource, agentId);
+          const result = await processTalkAudio(
+            audioData,
+            fileName,
+            audioSource,
+            agentId,
+          );
 
           if (!result) {
             // Empty transcription — nothing to respond with
@@ -1310,8 +1339,66 @@ const clawieTalkiePlugin = {
       },
     });
 
+    // ──────────────────────────────────────────────────────
+    //  Agent Tool: clawietalkie_setup_link
+    // ──────────────────────────────────────────────────────
+    api.registerTool({
+      name: "clawietalkie_setup_link",
+      label: "Get ClawieTalkie Setup Link",
+      description:
+        "Returns a clawietalkie:// deep link that auto-configures the ClawieTalkie macOS app with the gateway URL, secret key, and agent name. Send this link to the user — when they click it, the app opens with everything pre-filled. Use this when a user wants to set up ClawieTalkie on their device. Pass your name so it shows in the app.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: {
+            type: "string",
+            description:
+              "Your display name — shown in the app as the agent name (e.g. 'Clawie', 'Alice'). Use your own name.",
+          },
+        },
+      } as any,
+      async execute(toolCallId: string, params: any): Promise<any> {
+        const key = getSecretKey(api);
+        if (!key) {
+          return {
+            content: [
+              { type: "text", text: "Error: No secret key configured." },
+            ],
+          };
+        }
+
+        const gatewayUrl =
+          api.pluginConfig?.gatewayUrl ||
+          api.config?.plugins?.entries?.clawietalkie?.config?.gatewayUrl;
+        if (!gatewayUrl) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "Error: No gatewayUrl configured in ClawieTalkie plugin settings. Set the external gateway URL (e.g. https://say26.com) in the plugin config.",
+              },
+            ],
+          };
+        }
+
+        const agentName = params.name?.trim() || getAgentName(api);
+        const link =
+          "clawietalkie://setup?" +
+          "gateway=" +
+          encodeURIComponent(gatewayUrl) +
+          "&key=" +
+          encodeURIComponent(key) +
+          "&name=" +
+          encodeURIComponent(agentName);
+
+        return {
+          content: [{ type: "text", text: link }],
+        };
+      },
+    });
+
     api.logger.info(
-      "[clawietalkie] Plugin ready (routes: /clawietalkie/talk, /clawietalkie/pending, /clawietalkie/register; tools: clawietalkie_send, clawietalkie_get_secret_key, clawietalkie_rotate_secret_key)",
+      "[clawietalkie] Plugin ready (routes: /clawietalkie/talk, /clawietalkie/pending, /clawietalkie/register; tools: clawietalkie_send, clawietalkie_get_secret_key, clawietalkie_rotate_secret_key, clawietalkie_setup_link)",
     );
   },
 };

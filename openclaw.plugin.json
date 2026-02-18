@@ -1,5 +1,6 @@
 {
   "id": "clawietalkie",
+  "skills": ["skills/clawietalkie"],
   "name": "ClawieTalkie",
   "description": "Walkie-talkie voice interface — relays audio between the ClawieTalkie app and your OpenClaw agent.",
   "configSchema": {
@@ -7,6 +8,7 @@
     "additionalProperties": false,
     "properties": {
       "secretKey": { "type": "string", "description": "Secret key for ClawieTalkie app authentication (Bearer token). Auto-generated on first run if empty." },
+      "gatewayUrl": { "type": "string", "description": "External gateway URL (e.g. https://say26.com). Used to generate setup deep links for the ClawieTalkie app." },
       "voicePrompt": { "type": "string", "description": "System prompt prepended to transcribed speech before sending to the agent. Controls response style (length, format, etc.)." },
       "agentName": { "type": "string", "description": "Display name shown on the device when a voice message arrives (e.g. in the iOS PTT UI). Defaults to 'main'." },
       "stt": {
@@ -52,6 +54,7 @@
   },
   "uiHints": {
     "secretKey": { "label": "Secret Key", "sensitive": true },
+    "gatewayUrl": { "label": "Gateway URL", "placeholder": "https://say26.com" },
     "voicePrompt": { "label": "Voice Prompt", "placeholder": "You MUST reply in ONE short sentence..." },
     "agentName": { "label": "Sender Name", "placeholder": "Clawie" }
   }
