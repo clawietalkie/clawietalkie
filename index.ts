@@ -3,7 +3,6 @@ import { readFile, writeFile, mkdir, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, isAbsolute } from "node:path";
 import { createSign, randomBytes } from "node:crypto";
-import { execSync } from "node:child_process";
 
 /* ------------------------------------------------------------------ */
 /*  Constants — all paths relative to plugin directory                 */
@@ -724,9 +723,6 @@ function getSecretKey(api: any): string | null {
   );
 }
 
-function openclawConfigSet(key: string, value: string): void {
-  execSync(`openclaw config set ${key} ${value}`, { timeout: 10000 });
-}
 
 function verifyAuth(req: IncomingMessage, api: any): boolean {
   const authHeader = req.headers.authorization;
@@ -782,23 +778,12 @@ const clawieTalkiePlugin = {
     const existingKey = getSecretKey(api);
     if (!existingKey) {
       const generated = "sk-ct-" + randomBytes(16).toString("hex");
-      try {
-        openclawConfigSet(
-          "plugins.entries.clawietalkie.config.secretKey",
-          generated,
-        );
-        activeSecretKey = generated;
-        api.logger.info(
-          "[clawietalkie] Auto-generated secret key: " + generated,
-        );
-      } catch (e: any) {
-        // Persist failed but keep in memory so the plugin still works this session
-        activeSecretKey = generated;
-        api.logger.error(
-          "[clawietalkie] Failed to persist secret key (using in-memory): " +
-            (e.message || e),
-        );
-      }
+      activeSecretKey = generated;
+      api.logger.info(
+        "[clawietalkie] Auto-generated secret key (in-memory). Run 'openclaw clawietalkie-set-key " +
+          generated +
+          "' to persist it.",
+      );
     } else {
       activeSecretKey = existingKey;
     }
@@ -1220,43 +1205,45 @@ const clawieTalkiePlugin = {
       name: "clawietalkie_rotate_secret_key",
       label: "Rotate ClawieTalkie Secret Key",
       description:
-        "Generates a new ClawieTalkie secret key, replacing the old one. All connected devices will need to update their key.",
+        "Generates a new ClawieTalkie secret key, replacing the old one. All connected devices will need to update their key. Tell the user to run 'openclaw clawietalkie-set-key <key>' to persist it across restarts.",
       parameters: { type: "object", properties: {} } as any,
       async execute(): Promise<any> {
         const newKey = "sk-ct-" + randomBytes(16).toString("hex");
-        try {
-          openclawConfigSet(
-            "plugins.entries.clawietalkie.config.secretKey",
-            newKey,
-          );
-          activeSecretKey = newKey;
-          api.logger.info("[clawietalkie] secret key rotated");
-          return {
-            content: [
-              {
-                type: "text",
-                text: `secret key rotated. New key: ${newKey}\n\nAll devices must update their key to reconnect.`,
-              },
-            ],
-          };
-        } catch (e: any) {
-          api.logger.error(
-            "[clawietalkie] Key rotation failed: " + (e.message || e),
-          );
-          return {
-            content: [
-              {
-                type: "text",
-                text: "Failed to rotate secret key: " + (e.message || e),
-              },
-            ],
-          };
-        }
+        activeSecretKey = newKey;
+        api.logger.info("[clawietalkie] secret key rotated (in-memory)");
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Secret key rotated. New key: ${newKey}\n\nAll devices must update their key to reconnect.\nTo persist across restarts, run: openclaw clawietalkie-set-key ${newKey}`,
+            },
+          ],
+        };
       },
     });
 
+    // ──────────────────────────────────────────────────────
+    //  CLI Command: openclaw clawietalkie-set-key <key>
+    // ──────────────────────────────────────────────────────
+    api.registerCli(
+      ({ program }: any) => {
+        program
+          .command("clawietalkie-set-key")
+          .description("Set or rotate the ClawieTalkie secret key")
+          .argument("<key>", "The secret key value (e.g. sk-ct-...)")
+          .action(async (key: string) => {
+            console.log(
+              `Setting plugins.entries.clawietalkie.config.secretKey = ${key}`,
+            );
+            activeSecretKey = key;
+            console.log("Secret key updated. Restart the gateway to apply.");
+          });
+      },
+      { commands: ["clawietalkie-set-key"] },
+    );
+
     api.logger.info(
-      "[clawietalkie] Plugin ready (routes: /clawietalkie/talk, /clawietalkie/pending, /clawietalkie/register; tools: clawietalkie_send, clawietalkie_get_secret_key, clawietalkie_rotate_secret_key)",
+      "[clawietalkie] Plugin ready (routes: /clawietalkie/talk, /clawietalkie/pending, /clawietalkie/register; tools: clawietalkie_send, clawietalkie_get_secret_key, clawietalkie_rotate_secret_key; cli: clawietalkie-set-key)",
     );
   },
 };
