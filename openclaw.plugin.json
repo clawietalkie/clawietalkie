@@ -11,23 +11,48 @@
       "agentName": { "type": "string", "description": "Display name shown on the device when a voice message arrives (e.g. in the iOS PTT UI). Defaults to 'main'." },
       "stt": {
         "type": "object",
-        "description": "Speech-to-text provider config. If not set, falls back to env vars (ELEVENLABS_API_KEY, OPENAI_API_KEY, etc.).",
+        "description": "Speech-to-text config. Set 'provider' and configure that provider's section. Falls back to env vars if not set.",
         "properties": {
           "provider": { "type": "string", "description": "Provider name: elevenlabs, openai, groq, or deepgram." },
-          "apiKey": { "type": "string", "description": "API key for the STT provider." },
-          "baseUrl": { "type": "string", "description": "Base URL override (e.g. for custom routers). Uses provider default if omitted." },
-          "model": { "type": "string", "description": "Model override. Uses provider default if omitted." }
+          "elevenlabs": {
+            "type": "object",
+            "properties": {
+              "apiKey": { "type": "string" },
+              "baseUrl": { "type": "string" },
+              "model": { "type": "string" }
+            }
+          },
+          "openai": {
+            "type": "object",
+            "properties": {
+              "apiKey": { "type": "string" },
+              "baseUrl": { "type": "string" },
+              "model": { "type": "string" }
+            }
+          },
+          "groq": {
+            "type": "object",
+            "properties": {
+              "apiKey": { "type": "string" },
+              "baseUrl": { "type": "string" },
+              "model": { "type": "string" }
+            }
+          },
+          "deepgram": {
+            "type": "object",
+            "properties": {
+              "apiKey": { "type": "string" },
+              "baseUrl": { "type": "string" },
+              "model": { "type": "string" }
+            }
+          }
         }
       }
     }
   },
   "uiHints": {
-    "secretKey": { "label": "API Key", "sensitive": true },
+    "secretKey": { "label": "Secret Key", "sensitive": true },
     "voicePrompt": { "label": "Voice Prompt", "placeholder": "You MUST reply in ONE short sentence..." },
-    "agentName": { "label": "Sender Name", "placeholder": "Clawie" },
-    "stt.provider": { "label": "STT Provider", "placeholder": "elevenlabs" },
-    "stt.apiKey": { "label": "STT API Key", "sensitive": true },
-    "stt.baseUrl": { "label": "STT Base URL", "placeholder": "https://api.elevenlabs.io/v1" },
-    "stt.model": { "label": "STT Model", "placeholder": "scribe_v1" }
+    "agentName": { "label": "Sender Name", "placeholder": "Clawie" }
   }
 }

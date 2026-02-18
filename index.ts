@@ -277,15 +277,19 @@ function resolveSTTProvider(api: any): {
 } | null {
   // 1. Explicit plugin config takes priority
   const stt = api.pluginConfig?.stt;
-  if (stt?.provider && stt?.apiKey) {
+  if (stt?.provider) {
     const id = stt.provider.trim().toLowerCase();
+    const provCfg = stt[id];
     const defaults = STT_DEFAULTS[id] || STT_DEFAULTS.openai;
-    return {
-      id,
-      apiKey: stt.apiKey,
-      baseUrl: stt.baseUrl?.trim() || defaults.baseUrl,
-      model: stt.model?.trim() || defaults.model,
-    };
+    const apiKey = provCfg?.apiKey?.trim();
+    if (apiKey) {
+      return {
+        id,
+        apiKey,
+        baseUrl: provCfg?.baseUrl?.trim() || defaults.baseUrl,
+        model: provCfg?.model?.trim() || defaults.model,
+      };
+    }
   }
 
   // 2. Fall back to env vars
