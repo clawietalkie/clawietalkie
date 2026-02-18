@@ -326,9 +326,11 @@ async function transcribeElevenLabs(
     throw new Error(`ElevenLabs STT HTTP ${res.status}: ${detail}`);
   }
 
-  const data = (await res.json()) as any;
+  const raw = await res.text();
+  let data: any;
+  try { data = JSON.parse(raw); } catch { throw new Error("ElevenLabs STT non-JSON response: " + raw.slice(0, 500)); }
   const text = data.text?.trim();
-  if (!text) throw new Error("ElevenLabs STT response missing text");
+  if (!text) throw new Error("ElevenLabs STT no text in response: " + raw.slice(0, 500));
   return text;
 }
 
