@@ -2,5 +2,18 @@
   "id": "clawietalkie",
   "name": "ClawieTalkie",
   "description": "Walkie-talkie voice interface — relays audio between the ClawieTalkie app and your OpenClaw agent.",
-  "configSchema": { "type": "object", "additionalProperties": false, "properties": {} }
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "secretKey": { "type": "string", "description": "Secret key for ClawieTalkie app authentication (Bearer token). Auto-generated on first run if empty." },
+      "voicePrompt": { "type": "string", "description": "System prompt prepended to transcribed speech before sending to the agent. Controls response style (length, format, etc.)." },
+      "agentName": { "type": "string", "description": "Display name shown on the device when a voice message arrives (e.g. in the iOS PTT UI). Defaults to 'main'." }
+    }
+  },
+  "uiHints": {
+    "secretKey": { "label": "API Key", "sensitive": true },
+    "voicePrompt": { "label": "Voice Prompt", "placeholder": "You MUST reply in ONE short sentence..." },
+    "agentName": { "label": "Sender Name", "placeholder": "Clawie" }
+  }
 }

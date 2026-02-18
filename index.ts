@@ -1,8 +1,9 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { readFile, writeFile, mkdir, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
-import { createSign } from "node:crypto";
+import { join, isAbsolute } from "node:path";
+import { createSign, randomBytes } from "node:crypto";
+import { execSync } from "node:child_process";
 
 /* ------------------------------------------------------------------ */
 /*  Constants — all paths relative to plugin directory                 */
@@ -10,9 +11,11 @@ import { createSign } from "node:crypto";
 
 const PLUGIN_DIR = __dirname;
 const DATA_DIR = join(PLUGIN_DIR, "data");
-const PENDING_META_PATH = join(DATA_DIR, "pending-meta.json");
-const TOKENS_PATH = join(DATA_DIR, "device-tokens.json");
+const DEVICES_PATH = join(DATA_DIR, "devices.json");
+const MESSAGES_PATH = join(DATA_DIR, "messages.json");
+const AUDIO_DIR = join(DATA_DIR, "audio");
 const APNS_CONFIG_PATH = join(PLUGIN_DIR, "apns.json");
+const MESSAGE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                           */
@@ -24,61 +27,58 @@ function readBody(req: IncomingMessage): Promise<string> {
     req.on("data", (c: Buffer) => chunks.push(c));
     req.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
     req.on("error", reject);
+    req.resume();
   });
 }
 
-function readBodyRaw(req: IncomingMessage): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
+async function readBodyRaw(req: IncomingMessage): Promise<Buffer> {
+  // Try async iterator first (handles stream state more robustly)
+  try {
     const chunks: Buffer[] = [];
-    req.on("data", (c: Buffer) => chunks.push(c));
-    req.on("end", () => resolve(Buffer.concat(chunks)));
-    req.on("error", reject);
-  });
-}
-
-/** Parse multipart/form-data and extract the first file part's binary data. */
-function parseMultipart(body: Buffer, boundary: string): Buffer | null {
-  const sep = Buffer.from("--" + boundary);
-  const headerEnd = Buffer.from("\r\n\r\n");
-
-  const start = body.indexOf(sep);
-  if (start === -1) return null;
-
-  const afterSep = start + sep.length + 2; // skip boundary + \r\n
-  const headerEndIdx = body.indexOf(headerEnd, afterSep);
-  if (headerEndIdx === -1) return null;
-
-  const dataStart = headerEndIdx + 4; // skip \r\n\r\n
-  const nextBoundary = body.indexOf(sep, dataStart);
-  if (nextBoundary === -1) return null;
-
-  return body.subarray(dataStart, nextBoundary - 2);
+    for await (const chunk of req) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    return Buffer.concat(chunks);
+  } catch (e: any) {
+    throw new Error("Body read error: " + (e.message || e));
+  }
 }
 
 /** Ask the agent via the Gateway's internal WebSocket RPC. */
-async function getAIResponse(
+async function getAgentResponse(
   api: any,
   message: string = "clawietalkie_request",
+  agentIdOverride?: string,
 ): Promise<string> {
-  const cfgPort =
-    api.config && api.config.gateway && api.config.gateway.port;
+  const cfgPort = api.config && api.config.gateway && api.config.gateway.port;
   const envPort = process.env.OPENCLAW_GATEWAY_PORT;
   const port = cfgPort || (envPort ? Number(envPort) : 18789);
 
-  const cfgToken =
-    api.config &&
-    api.config.gateway &&
-    api.config.gateway.auth &&
-    api.config.gateway.auth.token;
-  const envToken = process.env.OPENCLAW_GATEWAY_TOKEN;
-  const token = cfgToken || envToken || "";
+  // Resolve gateway auth — mirrors resolveGatewayAuth() in the gateway.
+  // Supports both token and password modes, plus legacy CLAWDBOT_* env vars.
+  const authCfg =
+    (api.config && api.config.gateway && api.config.gateway.auth) || {};
+  const gwToken =
+    authCfg.token ||
+    process.env.OPENCLAW_GATEWAY_TOKEN ||
+    process.env.CLAWDBOT_GATEWAY_TOKEN ||
+    "";
+  const gwPassword =
+    authCfg.password ||
+    process.env.OPENCLAW_GATEWAY_PASSWORD ||
+    process.env.CLAWDBOT_GATEWAY_PASSWORD ||
+    "";
+  const authMode: string = authCfg.mode || (gwPassword ? "password" : "token");
+  const connectAuth: any =
+    authMode === "password" && gwPassword
+      ? { password: gwPassword }
+      : gwToken
+        ? { token: gwToken }
+        : undefined;
 
   var connectId = "ct-conn-" + Date.now();
   var agentId =
-    "ct-agent-" +
-    Date.now() +
-    "-" +
-    Math.random().toString(36).slice(2, 8);
+    "ct-agent-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
 
   return new Promise(function (resolve, reject) {
     var settled = false;
@@ -134,7 +134,7 @@ async function getAIResponse(
                 platform: process.platform,
                 mode: "backend",
               },
-              auth: token ? { token: token } : undefined,
+              auth: connectAuth,
               scopes: ["operator.write"],
             },
           }),
@@ -159,6 +159,7 @@ async function getAIResponse(
             ")",
         );
 
+        var targetAgent = agentIdOverride || "main";
         ws.send(
           JSON.stringify({
             type: "req",
@@ -167,8 +168,8 @@ async function getAIResponse(
             params: {
               message: message,
               idempotencyKey: agentId,
-              agentId: "main",
-              sessionKey: "clawietalkie",
+              agentId: targetAgent,
+              sessionKey: "agent:" + targetAgent + ":clawietalkie",
             },
           }),
         );
@@ -241,19 +242,139 @@ async function getAIResponse(
     };
 
     ws.onerror = function (err: any) {
-      finish(
-        new Error("WebSocket error: " + (err.message || String(err))),
-      );
+      finish(new Error("WebSocket error: " + (err.message || String(err))));
     };
 
     ws.onclose = function () {
-      finish(
-        new Error(
-          "WebSocket closed unexpectedly (phase: " + phase + ")",
-        ),
-      );
+      finish(new Error("WebSocket closed unexpectedly (phase: " + phase + ")"));
     };
   });
+}
+
+/* ------------------------------------------------------------------ */
+/*  STT — Speech-to-Text                                              */
+/* ------------------------------------------------------------------ */
+
+async function transcribeAudio(
+  api: any,
+  audioBuffer: Buffer,
+  fileName: string,
+): Promise<string> {
+  // Try ElevenLabs Scribe (key from TTS config or environment)
+  const elevenLabsKey =
+    api.config?.messages?.tts?.elevenlabs?.secretKey ||
+    process.env.ELEVENLABS_API_KEY;
+  if (elevenLabsKey) {
+    try {
+      api.logger.info("[clawietalkie] STT via ElevenLabs Scribe...");
+      const formData = new FormData();
+      formData.append("file", new Blob([audioBuffer]), fileName);
+      formData.append("model_id", "scribe_v1");
+
+      const resp = await fetch("https://api.elevenlabs.io/v1/speech-to-text", {
+        method: "POST",
+        headers: { "xi-api-key": elevenLabsKey },
+        body: formData,
+        signal: AbortSignal.timeout(30000),
+      });
+
+      if (!resp.ok) {
+        const errText = await resp.text();
+        throw new Error(
+          "ElevenLabs STT failed (" + resp.status + "): " + errText,
+        );
+      }
+
+      const result = (await resp.json()) as any;
+      api.logger.info(
+        "[clawietalkie] STT result: " + (result.text || "").slice(0, 200),
+      );
+      return result.text;
+    } catch (e: any) {
+      api.logger.warn(
+        "[clawietalkie] ElevenLabs STT error, falling back: " +
+          (e.message || e),
+      );
+    }
+  }
+
+  // Fallback: OpenAI Whisper (only if real OpenAI, not OpenRouter)
+  const openaiKey = process.env.OPENAI_API_KEY;
+  const baseUrl = process.env.OPENAI_BASE_URL || "";
+  if (openaiKey && !baseUrl.includes("openrouter")) {
+    api.logger.info("[clawietalkie] STT via OpenAI Whisper...");
+    const formData = new FormData();
+    formData.append("file", new Blob([audioBuffer]), fileName);
+    formData.append("model", "whisper-1");
+
+    const resp = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      method: "POST",
+      headers: { Authorization: "Bearer " + openaiKey },
+      body: formData,
+      signal: AbortSignal.timeout(30000),
+    });
+
+    if (!resp.ok) {
+      const errText = await resp.text();
+      throw new Error(
+        "OpenAI Whisper failed (" + resp.status + "): " + errText,
+      );
+    }
+
+    const result = (await resp.json()) as any;
+    api.logger.info(
+      "[clawietalkie] STT result: " + (result.text || "").slice(0, 200),
+    );
+    return result.text;
+  }
+
+  throw new Error(
+    "No STT provider available. Configure ElevenLabs or set OPENAI_API_KEY.",
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  TTS — Text-to-Speech (uses OpenClaw's built-in TTS)               */
+/* ------------------------------------------------------------------ */
+
+function wrapPcmAsWav(
+  pcm: Buffer,
+  sampleRate: number,
+  numChannels: number = 1,
+  bitsPerSample: number = 16,
+): Buffer {
+  const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
+  const blockAlign = numChannels * (bitsPerSample / 8);
+  const header = Buffer.alloc(44);
+
+  header.write("RIFF", 0);
+  header.writeUInt32LE(36 + pcm.length, 4);
+  header.write("WAVE", 8);
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16); // fmt chunk size
+  header.writeUInt16LE(1, 20); // PCM format
+  header.writeUInt16LE(numChannels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE(blockAlign, 32);
+  header.writeUInt16LE(bitsPerSample, 34);
+  header.write("data", 36);
+  header.writeUInt32LE(pcm.length, 40);
+
+  return Buffer.concat([header, pcm]);
+}
+
+async function textToSpeech(api: any, text: string): Promise<Buffer> {
+  const result = await api.runtime.tts.textToSpeechTelephony({
+    text,
+    cfg: api.config,
+  });
+  if (!result.success || !result.audioBuffer) {
+    throw new Error("TTS failed: " + (result.error || "no audio"));
+  }
+  // textToSpeechTelephony returns raw PCM — wrap in WAV header
+  const sampleRate = result.sampleRate || 22050;
+  return wrapPcmAsWav(result.audioBuffer, sampleRate);
 }
 
 /* ------------------------------------------------------------------ */
@@ -265,6 +386,7 @@ interface APNsConfig {
   teamId: string;
   keyPath: string;
   bundleId: string;
+  environment?: "sandbox" | "production";
 }
 
 function base64url(input: Buffer | string): string {
@@ -281,9 +403,7 @@ function createAPNsJWT(
   teamId: string,
   privateKeyPem: string,
 ): string {
-  const header = base64url(
-    JSON.stringify({ alg: "ES256", kid: keyId }),
-  );
+  const header = base64url(JSON.stringify({ alg: "ES256", kid: keyId }));
   const claims = base64url(
     JSON.stringify({
       iss: teamId,
@@ -309,25 +429,20 @@ async function loadAPNsConfig(
     if (!existsSync(APNS_CONFIG_PATH)) return null;
     const raw = await readFile(APNS_CONFIG_PATH, "utf-8");
     const config: APNsConfig = JSON.parse(raw);
-    if (
-      !config.keyId ||
-      !config.teamId ||
-      !config.keyPath ||
-      !config.bundleId
-    )
+    if (!config.keyId || !config.teamId || !config.keyPath || !config.bundleId)
       return null;
-    if (!existsSync(config.keyPath)) {
-      logger.warn(
-        "[clawietalkie] APNs key file not found: " + config.keyPath,
-      );
+    const resolvedKeyPath = isAbsolute(config.keyPath)
+      ? config.keyPath
+      : join(PLUGIN_DIR, config.keyPath);
+    if (!existsSync(resolvedKeyPath)) {
+      logger.warn("[clawietalkie] APNs key file not found: " + resolvedKeyPath);
       return null;
     }
-    const key = await readFile(config.keyPath, "utf-8");
+    const key = await readFile(resolvedKeyPath, "utf-8");
     return { config, key };
   } catch (e: any) {
     logger.warn(
-      "[clawietalkie] Failed to load APNs config: " +
-        (e.message || e),
+      "[clawietalkie] Failed to load APNs config: " + (e.message || e),
     );
     return null;
   }
@@ -339,11 +454,17 @@ async function sendPush(
   bundleId: string,
   payload: object,
   logger: any,
+  environment: "sandbox" | "production" = "sandbox",
+  pushType: "alert" | "pushtotalk" = "alert",
 ): Promise<void> {
   const http2 = await import("node:http2");
+  const host =
+    environment === "production"
+      ? "https://api.push.apple.com"
+      : "https://api.sandbox.push.apple.com";
 
   return new Promise((resolve, reject) => {
-    const client = http2.connect("https://api.sandbox.push.apple.com");
+    const client = http2.connect(host);
     let settled = false;
 
     client.on("error", (err: any) => {
@@ -354,12 +475,14 @@ async function sendPush(
     });
 
     const body = JSON.stringify(payload);
+    const apnsTopic =
+      pushType === "pushtotalk" ? `${bundleId}.voip-ptt` : bundleId;
     const req = client.request({
       ":method": "POST",
       ":path": `/3/device/${deviceToken}`,
       authorization: `bearer ${jwt}`,
-      "apns-topic": bundleId,
-      "apns-push-type": "alert",
+      "apns-topic": apnsTopic,
+      "apns-push-type": pushType,
       "apns-priority": "10",
       "apns-expiration": "0",
       "content-type": "application/json",
@@ -391,9 +514,7 @@ async function sendPush(
               " " +
               responseData,
           );
-          reject(
-            new Error(`APNs ${responseStatus}: ${responseData}`),
-          );
+          reject(new Error(`APNs ${responseStatus}: ${responseData}`));
         }
       }
     });
@@ -412,82 +533,233 @@ async function sendPush(
 }
 
 /* ------------------------------------------------------------------ */
-/*  Pending Audio Storage                                             */
+/*  Device & Message Storage (per-device queue)                       */
 /* ------------------------------------------------------------------ */
 
-async function savePendingAudio(
-  audioBuffer: Buffer,
-  contentType: string,
-  text: string,
-): Promise<void> {
-  await mkdir(DATA_DIR, { recursive: true });
-
-  const ext = contentType.includes("wav")
-    ? ".wav"
-    : contentType.includes("ogg")
-      ? ".ogg"
-      : ".mp3";
-  const audioPath = join(DATA_DIR, "pending-audio" + ext);
-
-  await writeFile(audioPath, audioBuffer);
-  await writeFile(
-    PENDING_META_PATH,
-    JSON.stringify({
-      audioFile: audioPath,
-      contentType,
-      text,
-      timestamp: Date.now(),
-    }),
-  );
+interface Device {
+  deviceId: string;
+  platform: string;
+  pushToken: string | null;
+  agentName?: string;
+  registeredAt: number;
+  lastSeen: number;
 }
 
-async function loadPendingAudio(): Promise<{
-  audioBuffer: Buffer;
+interface Message {
+  id: string;
+  text: string;
+  audioFile: string;
   contentType: string;
-} | null> {
-  try {
-    if (!existsSync(PENDING_META_PATH)) return null;
-    const meta = JSON.parse(
-      await readFile(PENDING_META_PATH, "utf-8"),
-    );
-    if (!existsSync(meta.audioFile)) return null;
-    const audioBuffer = await readFile(meta.audioFile);
-    return { audioBuffer, contentType: meta.contentType };
-  } catch {
-    return null;
-  }
+  timestamp: number;
+  targetDeviceId?: string; // If set, only deliver to this device
 }
 
-async function clearPendingAudio(): Promise<void> {
+async function loadDevices(): Promise<Device[]> {
   try {
-    if (existsSync(PENDING_META_PATH)) {
-      const meta = JSON.parse(
-        await readFile(PENDING_META_PATH, "utf-8"),
-      );
-      if (meta.audioFile && existsSync(meta.audioFile))
-        await unlink(meta.audioFile);
-      await unlink(PENDING_META_PATH);
-    }
-  } catch {}
-}
-
-/* ------------------------------------------------------------------ */
-/*  Device Token Storage                                              */
-/* ------------------------------------------------------------------ */
-
-async function loadDeviceTokens(): Promise<string[]> {
-  try {
-    if (!existsSync(TOKENS_PATH)) return [];
-    const raw = await readFile(TOKENS_PATH, "utf-8");
+    if (!existsSync(DEVICES_PATH)) return [];
+    const raw = await readFile(DEVICES_PATH, "utf-8");
     return JSON.parse(raw);
   } catch {
     return [];
   }
 }
 
-async function saveDeviceTokens(tokens: string[]): Promise<void> {
+async function saveDevices(devices: Device[]): Promise<void> {
   await mkdir(DATA_DIR, { recursive: true });
-  await writeFile(TOKENS_PATH, JSON.stringify(tokens));
+  await writeFile(DEVICES_PATH, JSON.stringify(devices, null, 2));
+}
+
+async function loadMessages(): Promise<Message[]> {
+  try {
+    if (!existsSync(MESSAGES_PATH)) return [];
+    const raw = await readFile(MESSAGES_PATH, "utf-8");
+    return JSON.parse(raw);
+  } catch {
+    return [];
+  }
+}
+
+async function saveMessages(messages: Message[]): Promise<void> {
+  await mkdir(DATA_DIR, { recursive: true });
+  await writeFile(MESSAGES_PATH, JSON.stringify(messages, null, 2));
+}
+
+async function cleanupExpiredMessages(messages: Message[]): Promise<Message[]> {
+  const now = Date.now();
+  const keep: Message[] = [];
+
+  for (const msg of messages) {
+    if (now - msg.timestamp > MESSAGE_TTL_MS) {
+      try {
+        if (msg.audioFile && existsSync(msg.audioFile))
+          await unlink(msg.audioFile);
+      } catch {}
+    } else {
+      keep.push(msg);
+    }
+  }
+
+  return keep;
+}
+
+async function deleteMessage(
+  messages: Message[],
+  messageId: string,
+): Promise<Message[]> {
+  const keep: Message[] = [];
+  for (const msg of messages) {
+    if (msg.id === messageId) {
+      try {
+        if (msg.audioFile && existsSync(msg.audioFile))
+          await unlink(msg.audioFile);
+      } catch {}
+    } else {
+      keep.push(msg);
+    }
+  }
+  return keep;
+}
+
+function generateMessageId(): string {
+  return "msg-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
+}
+
+/** Queue a voice message and send push notifications.
+ *  If targetDeviceId is set, only deliver to that device; otherwise broadcast to all. */
+async function queueMessageAndPush(
+  api: any,
+  text: string,
+  audioBuffer: Buffer,
+  targetDeviceId?: string,
+): Promise<string> {
+  await mkdir(AUDIO_DIR, { recursive: true });
+  const msgId = generateMessageId();
+  const audioPath = join(AUDIO_DIR, msgId + ".wav");
+  await writeFile(audioPath, audioBuffer);
+
+  const messages = await loadMessages();
+  const msg: Message = {
+    id: msgId,
+    text,
+    audioFile: audioPath,
+    contentType: "audio/wav",
+    timestamp: Date.now(),
+  };
+  if (targetDeviceId) msg.targetDeviceId = targetDeviceId;
+  messages.push(msg);
+  const cleaned = await cleanupExpiredMessages(messages);
+  await saveMessages(cleaned);
+
+  const devices = await loadDevices();
+  api.logger.info(
+    "[clawietalkie] Queued message " +
+      msgId +
+      ": " +
+      audioBuffer.length +
+      " bytes" +
+      (targetDeviceId
+        ? " (target: " + targetDeviceId.substring(0, 8) + "...)"
+        : " (broadcast)") +
+      ", " +
+      devices.length +
+      " devices registered",
+  );
+
+  // Only push to target device if specified, otherwise all
+  const pushDevices = targetDeviceId
+    ? devices.filter((d) => d.pushToken && d.deviceId === targetDeviceId)
+    : devices.filter((d) => d.pushToken);
+  if (pushDevices.length > 0) {
+    const apns = await loadAPNsConfig(api.logger);
+    if (apns) {
+      const jwt = createAPNsJWT(
+        apns.config.keyId,
+        apns.config.teamId,
+        apns.key,
+      );
+      for (const device of pushDevices) {
+        try {
+          await sendPush(
+            device.pushToken!,
+            jwt,
+            apns.config.bundleId,
+            { aps: {}, agentName: device.agentName || getAgentName(api) },
+            api.logger,
+            apns.config.environment || "sandbox",
+            "pushtotalk",
+          );
+          api.logger.info(
+            "[clawietalkie] Push sent to " +
+              device.deviceId.substring(0, 8) +
+              "...",
+          );
+        } catch (e: any) {
+          api.logger.error(
+            "[clawietalkie] Push failed for " +
+              device.deviceId.substring(0, 8) +
+              "...: " +
+              (e.message || e),
+          );
+        }
+      }
+    }
+  }
+
+  return msgId;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Auth — verify secret key                                             */
+/* ------------------------------------------------------------------ */
+
+/** Holds the active secret key for the current process (survives config-set before restart). */
+let activeSecretKey: string | null = null;
+
+function getSecretKey(api: any): string | null {
+  if (activeSecretKey) return activeSecretKey;
+  return (
+    api.pluginConfig?.secretKey ||
+    api.config?.plugins?.entries?.clawietalkie?.config?.secretKey ||
+    null
+  );
+}
+
+function verifyAuth(req: IncomingMessage, api: any): boolean {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) return false;
+  const token = authHeader.slice(7);
+  if (!token) return false;
+
+  const secretKey = getSecretKey(api);
+  if (!secretKey) {
+    api.logger.warn("[clawietalkie] No secretKey configured — rejecting all requests");
+    return false;
+  }
+
+  return token === secretKey;
+}
+
+function getAgentName(api: any): string {
+  return (
+    api.pluginConfig?.agentName ||
+    api.config?.plugins?.entries?.clawietalkie?.config?.agentName ||
+    "main"
+  );
+}
+
+const DEFAULT_VOICE_PROMPT =
+  "[CLAWIETALKIE — You MUST reply in ONE short sentence, MAX 15 words. No emojis. No special characters. No quotes. Plain spoken text ONLY. Do NOT use tools.] ";
+
+function getVoicePrompt(api: any): string {
+  const custom =
+    api.pluginConfig?.voicePrompt ||
+    api.config?.plugins?.entries?.clawietalkie?.config?.voicePrompt;
+  return custom ? custom + " " : DEFAULT_VOICE_PROMPT;
+}
+
+function sendUnauthorized(res: ServerResponse): void {
+  res.writeHead(401, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ error: "Unauthorized" }));
 }
 
 /* ------------------------------------------------------------------ */
@@ -499,21 +771,106 @@ const clawieTalkiePlugin = {
   name: "ClawieTalkie",
   description:
     "Walkie-talkie voice interface — relays audio between the ClawieTalkie app and your OpenClaw agent.",
-  configSchema: {
-    jsonSchema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {},
-    },
-  },
-
   register(api: any) {
-    api.logger.info(
-      "[clawietalkie] Registering routes and tools...",
-    );
+    api.logger.info("[clawietalkie] Registering routes and tools...");
+
+    // Auto-generate secret key on first run if not configured
+    const existingKey = getSecretKey(api);
+    if (!existingKey) {
+      const generated = "sk-ct-" + randomBytes(16).toString("hex");
+      try {
+        execSync(
+          `openclaw config set plugins.entries.clawietalkie.config.secretKey ${generated}`,
+          { timeout: 10000 },
+        );
+        activeSecretKey = generated;
+        api.logger.info(
+          "[clawietalkie] Auto-generated secret key: " + generated,
+        );
+      } catch (e: any) {
+        api.logger.error(
+          "[clawietalkie] Failed to auto-generate secret key: " +
+            (e.message || e),
+        );
+      }
+    } else {
+      activeSecretKey = existingKey;
+    }
+
+    /** STT → AI → TTS pipeline. Returns result for caller to deliver. */
+    async function processTalkAudio(
+      audioData: Buffer,
+      fileName: string,
+      audioSource: string,
+      agentId?: string,
+    ): Promise<{ text: string; audioBuffer: Buffer } | null> {
+      const t0 = Date.now();
+      const transcribedText = await transcribeAudio(api, audioData, fileName);
+      if (!transcribedText || !transcribedText.trim()) {
+        api.logger.warn("[clawietalkie] /talk: empty transcription, skipping");
+        return null;
+      }
+      api.logger.info(
+        "[clawietalkie] Transcribed (" +
+          (Date.now() - t0) +
+          "ms): " +
+          transcribedText.slice(0, 200),
+      );
+
+      const t1 = Date.now();
+      api.logger.info("[clawietalkie] Requesting AI response...");
+      const agentResponse = await getAgentResponse(
+        api,
+        getVoicePrompt(api) + transcribedText,
+        agentId,
+      );
+      api.logger.info(
+        "[clawietalkie] Agent response (" +
+          (Date.now() - t1) +
+          "ms): " +
+          agentResponse.slice(0, 300),
+      );
+
+      let ttsText = agentResponse
+        .replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}]/gu, "")
+        .replace(/([)("!?])\1{2,}/g, "$1")
+        .replace(/"{2,}/g, "")
+        .trim();
+      if (ttsText.length > 150) {
+        const truncated = ttsText.slice(0, 150);
+        const lastSentence = truncated.search(/[.!?)]\s*[^.!?)]*$/);
+        ttsText =
+          lastSentence > 30
+            ? truncated.slice(0, lastSentence + 1)
+            : truncated;
+        api.logger.warn(
+          "[clawietalkie] Truncated response from " +
+            agentResponse.length +
+            " to " +
+            ttsText.length +
+            " chars",
+        );
+      }
+
+      const t2 = Date.now();
+      const audioBuffer = await textToSpeech(api, ttsText);
+      api.logger.info(
+        "[clawietalkie] TTS generated " +
+          audioBuffer.length +
+          " bytes (" +
+          (Date.now() - t2) +
+          "ms), total: " +
+          (Date.now() - t0) +
+          "ms",
+      );
+
+      return { text: ttsText, audioBuffer };
+    }
 
     // ──────────────────────────────────────────────────────
-    //  HTTP Route: POST /clawietalkie/talk
+    //  HTTP Route: POST /clawietalkie/talk  (synchronous)
+    //  Holds connection open while STT → AI → TTS runs,
+    //  returns response audio directly in the HTTP body.
     // ──────────────────────────────────────────────────────
     api.registerHttpRoute({
       path: "/clawietalkie/talk",
@@ -524,71 +881,74 @@ const clawieTalkiePlugin = {
           return;
         }
 
+        if (!verifyAuth(req, api)) {
+          sendUnauthorized(res);
+          return;
+        }
+
         try {
-          const contentTypeHeader = req.headers["content-type"] || "";
-          const boundaryMatch = contentTypeHeader.match(/boundary=(.+)/);
-          if (!boundaryMatch) {
-            res.writeHead(400, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "Missing multipart boundary" }));
-            return;
-          }
+          const talkUrl = new URL(req.url || "/", "http://localhost");
+          const senderDeviceId =
+            talkUrl.searchParams.get("deviceId") || undefined;
+          const audioSource = talkUrl.searchParams.get("source") || "unknown";
+          const agentId = talkUrl.searchParams.get("agentId") || undefined;
 
-          const rawBody = await readBodyRaw(req);
-          const audioData = parseMultipart(rawBody, boundaryMatch[1]);
-          if (!audioData || audioData.length === 0) {
+          api.logger.info(
+            "[clawietalkie] /talk POST" +
+              " source=" +
+              audioSource +
+              (agentId ? " agent=" + agentId : "") +
+              (senderDeviceId
+                ? " device=" + senderDeviceId.substring(0, 8) + "..."
+                : "") +
+              " content-length=" +
+              (req.headers["content-length"] || "unknown"),
+          );
+
+          // Raw binary body
+          const fileName = "recording.m4a";
+          let audioData: Buffer;
+          const gatewayBody = (req as any).body;
+          if (gatewayBody && gatewayBody.length > 0) {
+            audioData = Buffer.isBuffer(gatewayBody) ? gatewayBody : Buffer.from(gatewayBody);
+          } else {
+            audioData = await readBodyRaw(req);
+          }
+          if (audioData.length === 0) {
             res.writeHead(400, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "No audio data found in request" }));
+            res.end(JSON.stringify({ error: "Empty body" }));
             return;
           }
 
           api.logger.info(
-            "[clawietalkie] /talk received " + audioData.length + " bytes of audio",
+            "[clawietalkie] /talk received " +
+              audioData.length + " bytes" +
+              " source=" + audioSource +
+              (senderDeviceId ? " device=" + senderDeviceId.substring(0, 8) + "..." : ""),
           );
 
-          await mkdir(DATA_DIR, { recursive: true });
-          const talkAudioPath = join(DATA_DIR, "talk-recording-" + Date.now() + ".m4a");
-          await writeFile(talkAudioPath, audioData);
+          // Synchronous: process STT → AI → TTS and return audio in response
+          const result = await processTalkAudio(audioData, fileName, audioSource, agentId);
 
-          api.logger.info("[clawietalkie] Saved recording to " + talkAudioPath);
-          api.logger.info("[clawietalkie] Requesting AI response...");
-          const responsePath = await getAIResponse(
-            api,
-            "walkie_talkie_voice:" + talkAudioPath,
-          );
-
-          try { await unlink(talkAudioPath); } catch {}
-
-          // Agent returns path to an audio file it generated
-          const trimmedPath = responsePath.trim();
-          if (!existsSync(trimmedPath)) {
-            res.writeHead(500, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "Agent did not return a valid audio file" }));
+          if (!result) {
+            // Empty transcription — nothing to respond with
+            res.writeHead(204);
+            res.end();
             return;
           }
-
-          const audioBuffer = await readFile(trimmedPath);
-          const ext = trimmedPath.split(".").pop()?.toLowerCase() || "";
-          const contentType = ext === "wav" ? "audio/wav"
-            : ext === "ogg" || ext === "opus" ? "audio/ogg"
-            : "audio/mpeg";
-
-          api.logger.info(
-            "[clawietalkie] Got response audio: " + audioBuffer.length + " bytes from " + trimmedPath,
-          );
-
-          try { await unlink(trimmedPath); } catch {}
 
           res.writeHead(200, {
-            "Content-Type": contentType,
-            "Content-Length": String(audioBuffer.length),
+            "Content-Type": "audio/wav",
+            "Content-Length": String(result.audioBuffer.length),
           });
-          res.end(audioBuffer);
+          res.end(result.audioBuffer);
         } catch (err) {
-          const message =
-            err instanceof Error ? err.message : String(err);
+          const message = err instanceof Error ? err.message : String(err);
           api.logger.error("[clawietalkie] /talk error: " + message);
-          res.writeHead(500, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: message }));
+          if (!res.headersSent) {
+            res.writeHead(500, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: message }));
+          }
         }
       },
     });
@@ -599,20 +959,78 @@ const clawieTalkiePlugin = {
     api.registerHttpRoute({
       path: "/clawietalkie/pending",
       async handler(req: IncomingMessage, res: ServerResponse) {
+        if (!verifyAuth(req, api)) {
+          sendUnauthorized(res);
+          return;
+        }
+
         if (req.method === "GET") {
-          const pending = await loadPendingAudio();
+          const getUrl = new URL(req.url || "/", "http://localhost");
+          const deviceId = getUrl.searchParams.get("deviceId");
+
+          let messages = await loadMessages();
+          const beforeCount = messages.length;
+          messages = await cleanupExpiredMessages(messages);
+          // Remove entries whose audio file is missing to prevent blocking the queue
+          messages = messages.filter((m) => existsSync(m.audioFile));
+          if (messages.length !== beforeCount) {
+            await saveMessages(messages);
+          }
+
+          // Return first message eligible for this device:
+          // - targeted messages: only if targetDeviceId matches
+          // - broadcast messages (no targetDeviceId): any device can pick it up
+          const pending = deviceId
+            ? messages.find(
+                (m) => !m.targetDeviceId || m.targetDeviceId === deviceId,
+              )
+            : messages[0];
           if (!pending) {
             res.writeHead(404, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: "No pending audio" }));
             return;
           }
-          res.writeHead(200, {
-            "Content-Type": pending.contentType,
-            "Content-Length": String(pending.audioBuffer.length),
-          });
-          res.end(pending.audioBuffer);
+
+          try {
+            const audioBuffer = await readFile(pending.audioFile);
+
+            // Claim on read: delete broadcast messages immediately so no other device gets them.
+            // For targeted messages, only one device can see them anyway.
+            if (!pending.targetDeviceId) {
+              messages = await deleteMessage(messages, pending.id);
+              await saveMessages(messages);
+            }
+
+            res.writeHead(200, {
+              "Content-Type": pending.contentType,
+              "Content-Length": String(audioBuffer.length),
+              "X-Message-Id": pending.id,
+            });
+            res.end(audioBuffer);
+          } catch (e: any) {
+            res.writeHead(500, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: e.message || String(e) }));
+          }
         } else if (req.method === "DELETE") {
-          await clearPendingAudio();
+          const delUrl = new URL(req.url || "/", "http://localhost");
+          const messageId = delUrl.searchParams.get("messageId");
+
+          if (!messageId) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(
+              JSON.stringify({ error: "messageId query param required" }),
+            );
+            return;
+          }
+
+          let messages = await loadMessages();
+
+          // Delete message immediately — first device to acknowledge wins
+          messages = await deleteMessage(messages, messageId);
+
+          const cleaned = await cleanupExpiredMessages(messages);
+          await saveMessages(cleaned);
+
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true }));
         } else {
@@ -634,25 +1052,47 @@ const clawieTalkiePlugin = {
           return;
         }
 
+        if (!verifyAuth(req, api)) {
+          sendUnauthorized(res);
+          return;
+        }
+
         try {
           const body = JSON.parse(await readBody(req));
-          const token = body.deviceToken;
-          if (!token || typeof token !== "string") {
+          const { deviceId, platform, pushToken, agentName } = body;
+          if (!deviceId || typeof deviceId !== "string") {
             res.writeHead(400, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "deviceToken required" }));
+            res.end(JSON.stringify({ error: "deviceId required" }));
             return;
           }
 
-          const tokens = await loadDeviceTokens();
-          if (!tokens.includes(token)) {
-            tokens.push(token);
-            await saveDeviceTokens(tokens);
-            api.logger.info(
-              "[clawietalkie] Registered device token: " +
-                token.substring(0, 8) +
-                "...",
-            );
+          const devices = await loadDevices();
+          const now = Date.now();
+          const existing = devices.find((d) => d.deviceId === deviceId);
+          if (existing) {
+            existing.platform = platform || existing.platform;
+            existing.pushToken =
+              pushToken !== undefined ? pushToken || null : existing.pushToken;
+            if (agentName) existing.agentName = agentName;
+            existing.lastSeen = now;
+          } else {
+            devices.push({
+              deviceId,
+              platform: platform || "unknown",
+              pushToken: pushToken || null,
+              agentName: agentName || undefined,
+              registeredAt: now,
+              lastSeen: now,
+            });
           }
+          await saveDevices(devices);
+          api.logger.info(
+            "[clawietalkie] Registered device: " +
+              deviceId.substring(0, 8) +
+              "... (" +
+              (platform || "unknown") +
+              ")",
+          );
 
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true }));
@@ -664,154 +1104,63 @@ const clawieTalkiePlugin = {
     });
 
     // ──────────────────────────────────────────────────────
-    //  Agent Tool: clawietalkie_send_voice
+    //  Agent Tool: clawietalkie_send
     // ──────────────────────────────────────────────────────
     api.registerTool({
-      name: "clawietalkie_send_voice",
+      name: "clawietalkie_send",
       label: "Send Voice Message",
       description:
-        "Send a voice message to the user's device via ClawieTalkie. Provide the path to an audio file (mp3, wav, ogg, etc.) that you have already generated.",
+        "Send a voice message to the user's device via ClawieTalkie. Provide the text to speak — the plugin handles TTS.",
       parameters: {
         type: "object",
         properties: {
-          audioPath: {
+          text: {
             type: "string",
             description:
-              "Absolute path to the audio file to send",
+              "The text to convert to speech and send as a voice message",
           },
         },
-        required: ["audioPath"],
+        required: ["text"],
       } as any,
-      async execute(
-        toolCallId: string,
-        params: any,
-      ): Promise<any> {
-        const audioPath = params.audioPath;
-        if (!audioPath) {
+      async execute(toolCallId: string, params: any): Promise<any> {
+        const text = params.text;
+        if (!text) {
           return {
             content: [
               {
                 type: "text",
-                text: "Error: audioPath parameter is required",
+                text: "Error: text parameter is required",
               },
             ],
-            details: { error: "missing audioPath" },
+            details: { error: "missing text" },
           };
         }
 
         try {
-          if (!existsSync(audioPath)) {
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: "Error: audio file not found at " + audioPath,
-                },
-              ],
-              details: { error: "file not found" },
-            };
-          }
-
-          const audioBuffer = await readFile(audioPath);
-          const ext = audioPath.split(".").pop()?.toLowerCase() || "";
-          const contentType = ext === "wav" ? "audio/wav"
-            : ext === "ogg" || ext === "opus" ? "audio/ogg"
-            : "audio/mpeg";
-
           api.logger.info(
-            "[clawietalkie] clawietalkie_send_voice: " + audioBuffer.length + " bytes from " + audioPath,
+            "[clawietalkie] clawietalkie_send TTS for: " + text.slice(0, 100),
           );
-
-          await savePendingAudio(audioBuffer, contentType, "");
+          const audioBuffer = await textToSpeech(api, text);
           api.logger.info(
-            "[clawietalkie] Saved pending audio: " +
+            "[clawietalkie] clawietalkie_send: " +
               audioBuffer.length +
               " bytes",
           );
 
-          const tokens = await loadDeviceTokens();
-          if (tokens.length === 0) {
-            api.logger.warn(
-              "[clawietalkie] No device tokens registered, skipping push",
-            );
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: "Voice message saved but no devices registered for push notifications.",
-                },
-              ],
-              details: { audioSize: audioBuffer.length, pushSent: false },
-            };
-          }
-
-          const apns = await loadAPNsConfig(api.logger);
-          if (!apns) {
-            api.logger.warn(
-              "[clawietalkie] APNs not configured, skipping push",
-            );
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: "Voice message saved but APNs not configured. Place apns.json in the plugin directory.",
-                },
-              ],
-              details: { audioSize: audioBuffer.length, pushSent: false },
-            };
-          }
-
-          const jwt = createAPNsJWT(
-            apns.config.keyId,
-            apns.config.teamId,
-            apns.key,
-          );
-          let pushCount = 0;
-          for (const token of tokens) {
-            try {
-              await sendPush(
-                token,
-                jwt,
-                apns.config.bundleId,
-                {
-                  aps: {
-                    alert: {
-                      title: "Clawie",
-                      body: "New voice message",
-                    },
-                    sound: "default",
-                  },
-                },
-                api.logger,
-              );
-              pushCount++;
-              api.logger.info(
-                "[clawietalkie] Push sent to " +
-                  token.substring(0, 8) +
-                  "...",
-              );
-            } catch (e: any) {
-              api.logger.error(
-                "[clawietalkie] Push failed for " +
-                  token.substring(0, 8) +
-                  "...: " +
-                  (e.message || e),
-              );
-            }
-          }
+          const msgId = await queueMessageAndPush(api, text, audioBuffer);
 
           return {
             content: [
               {
                 type: "text",
-                text: `Voice message sent! TTS: ${audioBuffer.length} bytes, push delivered to ${pushCount}/${tokens.length} devices.`,
+                text: `Voice message sent! (${msgId}) TTS: ${audioBuffer.length} bytes.`,
               },
             ],
-            details: { audioSize: audioBuffer.length, pushSent: true, pushCount },
+            details: { audioSize: audioBuffer.length, messageId: msgId },
           };
         } catch (e: any) {
           api.logger.error(
-            "[clawietalkie] clawietalkie_send_voice error: " + (e.message || e),
+            "[clawietalkie] clawietalkie_send error: " + (e.message || e),
           );
           return {
             content: [
@@ -826,8 +1175,82 @@ const clawieTalkiePlugin = {
       },
     });
 
+    // ──────────────────────────────────────────────────────
+    //  Agent Tool: clawietalkie_get_secret_key
+    // ──────────────────────────────────────────────────────
+    api.registerTool({
+      name: "clawietalkie_get_secret_key",
+      label: "Get ClawieTalkie Secret Key",
+      description:
+        "Returns the ClawieTalkie secret key so the user can configure the app on their device.",
+      parameters: { type: "object", properties: {} } as any,
+      async execute(): Promise<any> {
+        const key = getSecretKey(api);
+        if (!key) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "No ClawieTalkie secret key is configured.",
+              },
+            ],
+          };
+        }
+        return {
+          content: [
+            {
+              type: "text",
+              text: key,
+            },
+          ],
+        };
+      },
+    });
+
+    // ──────────────────────────────────────────────────────
+    //  Agent Tool: clawietalkie_rotate_secret_key
+    // ──────────────────────────────────────────────────────
+    api.registerTool({
+      name: "clawietalkie_rotate_secret_key",
+      label: "Rotate ClawieTalkie Secret Key",
+      description:
+        "Generates a new ClawieTalkie secret key, replacing the old one. All connected devices will need to update their key.",
+      parameters: { type: "object", properties: {} } as any,
+      async execute(): Promise<any> {
+        const newKey = "sk-ct-" + randomBytes(16).toString("hex");
+        try {
+          execSync(
+            `openclaw config set plugins.entries.clawietalkie.config.secretKey ${newKey}`,
+            { timeout: 10000 },
+          );
+          activeSecretKey = newKey;
+          api.logger.info("[clawietalkie] secret key rotated");
+          return {
+            content: [
+              {
+                type: "text",
+                text: `secret key rotated. New key: ${newKey}\n\nAll devices must update their key to reconnect.`,
+              },
+            ],
+          };
+        } catch (e: any) {
+          api.logger.error(
+            "[clawietalkie] Key rotation failed: " + (e.message || e),
+          );
+          return {
+            content: [
+              {
+                type: "text",
+                text: "Failed to rotate secret key: " + (e.message || e),
+              },
+            ],
+          };
+        }
+      },
+    });
+
     api.logger.info(
-      "[clawietalkie] Plugin ready (routes: /clawietalkie/talk, /clawietalkie/pending, /clawietalkie/register; tool: clawietalkie_send_voice)",
+      "[clawietalkie] Plugin ready (routes: /clawietalkie/talk, /clawietalkie/pending, /clawietalkie/register; tools: clawietalkie_send, clawietalkie_get_secret_key, clawietalkie_rotate_secret_key)",
     );
   },
 };
