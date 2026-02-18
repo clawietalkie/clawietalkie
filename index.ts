@@ -724,6 +724,31 @@ function getSecretKey(api: any): string | null {
   );
 }
 
+/** Find the openclaw binary — checks common locations if not in PATH. */
+function findOpenclawBin(): string {
+  const candidates = [
+    "openclaw",
+    "/usr/local/bin/openclaw",
+    "/usr/bin/openclaw",
+    join(process.env.HOME || "/root", ".local/bin/openclaw"),
+    join(process.env.HOME || "/root", "bin/openclaw"),
+  ];
+  for (const bin of candidates) {
+    try {
+      execSync(`${bin} --version`, { timeout: 5000, stdio: "ignore" });
+      return bin;
+    } catch {}
+  }
+  return "openclaw"; // fallback, let it fail with a clear error
+}
+
+let openclawBin: string | null = null;
+
+function openclawConfigSet(key: string, value: string): void {
+  if (!openclawBin) openclawBin = findOpenclawBin();
+  execSync(`${openclawBin} config set ${key} ${value}`, { timeout: 10000 });
+}
+
 function verifyAuth(req: IncomingMessage, api: any): boolean {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith("Bearer ")) return false;
@@ -779,17 +804,19 @@ const clawieTalkiePlugin = {
     if (!existingKey) {
       const generated = "sk-ct-" + randomBytes(16).toString("hex");
       try {
-        execSync(
-          `openclaw config set plugins.entries.clawietalkie.config.secretKey ${generated}`,
-          { timeout: 10000 },
+        openclawConfigSet(
+          "plugins.entries.clawietalkie.config.secretKey",
+          generated,
         );
         activeSecretKey = generated;
         api.logger.info(
           "[clawietalkie] Auto-generated secret key: " + generated,
         );
       } catch (e: any) {
+        // Persist failed but keep in memory so the plugin still works this session
+        activeSecretKey = generated;
         api.logger.error(
-          "[clawietalkie] Failed to auto-generate secret key: " +
+          "[clawietalkie] Failed to persist secret key (using in-memory): " +
             (e.message || e),
         );
       }
@@ -1219,9 +1246,9 @@ const clawieTalkiePlugin = {
       async execute(): Promise<any> {
         const newKey = "sk-ct-" + randomBytes(16).toString("hex");
         try {
-          execSync(
-            `openclaw config set plugins.entries.clawietalkie.config.secretKey ${newKey}`,
-            { timeout: 10000 },
+          openclawConfigSet(
+            "plugins.entries.clawietalkie.config.secretKey",
+            newKey,
           );
           activeSecretKey = newKey;
           api.logger.info("[clawietalkie] secret key rotated");
