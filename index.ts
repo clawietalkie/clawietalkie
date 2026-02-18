@@ -49,24 +49,12 @@ async function getAgentResponse(
   message: string = "clawietalkie_request",
   agentIdOverride?: string,
 ): Promise<string> {
-  const cfgPort = api.config && api.config.gateway && api.config.gateway.port;
-  const envPort = process.env.OPENCLAW_GATEWAY_PORT;
-  const port = cfgPort || (envPort ? Number(envPort) : 18789);
+  const port = api.config?.gateway?.port || 18789;
 
-  // Resolve gateway auth — mirrors resolveGatewayAuth() in the gateway.
-  // Supports both token and password modes, plus legacy CLAWDBOT_* env vars.
-  const authCfg =
-    (api.config && api.config.gateway && api.config.gateway.auth) || {};
-  const gwToken =
-    authCfg.token ||
-    process.env.OPENCLAW_GATEWAY_TOKEN ||
-    process.env.CLAWDBOT_GATEWAY_TOKEN ||
-    "";
-  const gwPassword =
-    authCfg.password ||
-    process.env.OPENCLAW_GATEWAY_PASSWORD ||
-    process.env.CLAWDBOT_GATEWAY_PASSWORD ||
-    "";
+  // Resolve gateway auth from config (plugin runs inside the gateway process).
+  const authCfg = api.config?.gateway?.auth || {};
+  const gwToken = authCfg.token || "";
+  const gwPassword = authCfg.password || "";
   const authMode: string = authCfg.mode || (gwPassword ? "password" : "token");
   const connectAuth: any =
     authMode === "password" && gwPassword
@@ -259,10 +247,8 @@ async function transcribeAudio(
   audioBuffer: Buffer,
   fileName: string,
 ): Promise<string> {
-  // Try ElevenLabs Scribe (key from TTS config or environment)
-  const elevenLabsKey =
-    api.config?.messages?.tts?.elevenlabs?.secretKey ||
-    process.env.ELEVENLABS_API_KEY;
+  // Try ElevenLabs Scribe (key from TTS config)
+  const elevenLabsKey = api.config?.messages?.tts?.elevenlabs?.secretKey;
   if (elevenLabsKey) {
     try {
       api.logger.info("[clawietalkie] STT via ElevenLabs Scribe...");
@@ -298,8 +284,8 @@ async function transcribeAudio(
   }
 
   // Fallback: OpenAI Whisper (only if real OpenAI, not OpenRouter)
-  const openaiKey = process.env.OPENAI_API_KEY;
-  const baseUrl = process.env.OPENAI_BASE_URL || "";
+  const openaiKey = api.config?.llm?.openai?.apiKey || api.config?.llm?.apiKey;
+  const baseUrl = api.config?.llm?.openai?.baseUrl || api.config?.llm?.baseUrl || "";
   if (openaiKey && !baseUrl.includes("openrouter")) {
     api.logger.info("[clawietalkie] STT via OpenAI Whisper...");
     const formData = new FormData();
