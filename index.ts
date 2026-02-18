@@ -724,29 +724,8 @@ function getSecretKey(api: any): string | null {
   );
 }
 
-/** Find the openclaw binary — checks common locations if not in PATH. */
-function findOpenclawBin(): string {
-  const candidates = [
-    "openclaw",
-    "/usr/local/bin/openclaw",
-    "/usr/bin/openclaw",
-    join(process.env.HOME || "/root", ".local/bin/openclaw"),
-    join(process.env.HOME || "/root", "bin/openclaw"),
-  ];
-  for (const bin of candidates) {
-    try {
-      execSync(`${bin} --version`, { timeout: 5000, stdio: "ignore" });
-      return bin;
-    } catch {}
-  }
-  return "openclaw"; // fallback, let it fail with a clear error
-}
-
-let openclawBin: string | null = null;
-
 function openclawConfigSet(key: string, value: string): void {
-  if (!openclawBin) openclawBin = findOpenclawBin();
-  execSync(`${openclawBin} config set ${key} ${value}`, { timeout: 10000 });
+  execSync(`openclaw config set ${key} ${value}`, { timeout: 10000 });
 }
 
 function verifyAuth(req: IncomingMessage, api: any): boolean {
