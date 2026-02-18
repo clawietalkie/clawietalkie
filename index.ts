@@ -239,26 +239,163 @@ async function getAgentResponse(
 }
 
 /* ------------------------------------------------------------------ */
-/*  STT — Speech-to-Text (uses gateway's configured provider)         */
+/*  STT — Speech-to-Text                                              */
+/*  Config: pluginConfig.stt.{provider, apiKey, baseUrl, model}        */
+/*  Fallback: env vars (ELEVENLABS_API_KEY > OPENAI_API_KEY > ...)    */
 /* ------------------------------------------------------------------ */
+
+/** Read an env var from process.env or gateway config env.vars. */
+function getEnvVar(api: any, name: string): string | undefined {
+  if (process.env[name]) return process.env[name];
+  const vars = api.config?.env?.vars;
+  if (vars && vars[name]) return vars[name];
+  return undefined;
+}
+
+/** Default base URLs and models per provider. */
+const STT_DEFAULTS: Record<string, { baseUrl: string; model: string }> = {
+  elevenlabs: { baseUrl: "https://api.elevenlabs.io/v1", model: "scribe_v1" },
+  openai:     { baseUrl: "https://api.openai.com/v1",    model: "gpt-4o-mini-transcribe" },
+  groq:       { baseUrl: "https://api.groq.com/openai/v1", model: "whisper-large-v3" },
+  deepgram:   { baseUrl: "https://api.deepgram.com/v1",  model: "nova-3" },
+};
+
+/** Env var fallback order (tried when pluginConfig.stt is not set). */
+const STT_ENV_FALLBACKS: { id: string; envKey: string }[] = [
+  { id: "elevenlabs", envKey: "ELEVENLABS_API_KEY" },
+  { id: "openai",     envKey: "OPENAI_API_KEY" },
+  { id: "groq",       envKey: "GROQ_API_KEY" },
+  { id: "deepgram",   envKey: "DEEPGRAM_API_KEY" },
+];
+
+/** Resolve STT provider from plugin config, falling back to env vars. */
+function resolveSTTProvider(api: any): {
+  id: string;
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+} | null {
+  // 1. Explicit plugin config takes priority
+  const stt = api.pluginConfig?.stt;
+  if (stt?.provider && stt?.apiKey) {
+    const id = stt.provider.trim().toLowerCase();
+    const defaults = STT_DEFAULTS[id] || STT_DEFAULTS.openai;
+    return {
+      id,
+      apiKey: stt.apiKey,
+      baseUrl: stt.baseUrl?.trim() || defaults.baseUrl,
+      model: stt.model?.trim() || defaults.model,
+    };
+  }
+
+  // 2. Fall back to env vars
+  for (const fb of STT_ENV_FALLBACKS) {
+    const apiKey = getEnvVar(api, fb.envKey);
+    if (!apiKey) continue;
+    const defaults = STT_DEFAULTS[fb.id];
+    return { id: fb.id, apiKey, baseUrl: defaults.baseUrl, model: defaults.model };
+  }
+  return null;
+}
+
+/** Call ElevenLabs Scribe API (different auth + field names from OpenAI). */
+async function transcribeElevenLabs(
+  apiKey: string,
+  baseUrl: string,
+  model: string,
+  audioBuffer: Buffer,
+  fileName: string,
+): Promise<string> {
+  const url = baseUrl.replace(/\/+$/, "") + "/speech-to-text";
+
+  const form = new FormData();
+  const blob = new Blob([new Uint8Array(audioBuffer)], {
+    type: "application/octet-stream",
+  });
+  form.append("file", blob, fileName || "audio.m4a");
+  form.append("model_id", model);
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "xi-api-key": apiKey },
+    body: form,
+  });
+
+  if (!res.ok) {
+    const detail = await res.text();
+    throw new Error(`ElevenLabs STT HTTP ${res.status}: ${detail}`);
+  }
+
+  const data = (await res.json()) as any;
+  const text = data.text?.trim();
+  if (!text) throw new Error("ElevenLabs STT response missing text");
+  return text;
+}
+
+/** Call the OpenAI-compatible /audio/transcriptions endpoint.
+ *  Works with OpenAI, Groq, and any compatible router (ares, etc). */
+async function transcribeOpenAICompatible(
+  apiKey: string,
+  baseUrl: string,
+  model: string,
+  audioBuffer: Buffer,
+  fileName: string,
+): Promise<string> {
+  const url = baseUrl.replace(/\/+$/, "") + "/audio/transcriptions";
+
+  const form = new FormData();
+  const blob = new Blob([new Uint8Array(audioBuffer)], {
+    type: "application/octet-stream",
+  });
+  form.append("file", blob, fileName || "audio.m4a");
+  form.append("model", model);
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}` },
+    body: form,
+  });
+
+  if (!res.ok) {
+    const detail = await res.text();
+    throw new Error(`STT HTTP ${res.status}: ${detail}`);
+  }
+
+  const data = (await res.json()) as any;
+  const text = data.text?.trim();
+  if (!text) throw new Error("STT response missing text");
+  return text;
+}
 
 async function transcribeAudio(
   api: any,
   audioBuffer: Buffer,
   fileName: string,
 ): Promise<string> {
-  const result = await api.runtime.stt.speechToText({
+  const provider = resolveSTTProvider(api);
+  if (!provider) {
+    throw new Error(
+      "No STT provider available — set ELEVENLABS_API_KEY, OPENAI_API_KEY, GROQ_API_KEY, or DEEPGRAM_API_KEY",
+    );
+  }
+
+  api.logger.info(
+    `[clawietalkie] STT via ${provider.id} (${provider.baseUrl}, model=${provider.model})`,
+  );
+  const transcribeFn =
+    provider.id === "elevenlabs"
+      ? transcribeElevenLabs
+      : transcribeOpenAICompatible;
+  const text = await transcribeFn(
+    provider.apiKey,
+    provider.baseUrl,
+    provider.model,
     audioBuffer,
     fileName,
-    cfg: api.config,
-  });
-  if (!result.success || !result.text) {
-    throw new Error("STT failed: " + (result.error || "no transcription"));
-  }
-  api.logger.info(
-    "[clawietalkie] STT result: " + (result.text || "").slice(0, 200),
   );
-  return result.text;
+
+  api.logger.info("[clawietalkie] STT result: " + (text || "").slice(0, 200));
+  return text;
 }
 
 /* ------------------------------------------------------------------ */
@@ -668,6 +805,24 @@ function verifyAuth(req: IncomingMessage, api: any): boolean {
   return token === secretKey;
 }
 
+async function persistSecretKey(api: any, key: string): Promise<void> {
+  try {
+    const cfg = api.config;
+    if (!cfg.plugins) cfg.plugins = {};
+    if (!cfg.plugins.entries) cfg.plugins.entries = {};
+    if (!cfg.plugins.entries.clawietalkie) cfg.plugins.entries.clawietalkie = {};
+    if (!cfg.plugins.entries.clawietalkie.config)
+      cfg.plugins.entries.clawietalkie.config = {};
+    cfg.plugins.entries.clawietalkie.config.secretKey = key;
+    await api.runtime.config.writeConfigFile(cfg);
+    api.logger.info("[clawietalkie] Secret key persisted to config file.");
+  } catch (e: any) {
+    api.logger.warn(
+      "[clawietalkie] Failed to persist secret key: " + (e.message || e),
+    );
+  }
+}
+
 function getAgentName(api: any): string {
   return (
     api.pluginConfig?.agentName ||
@@ -708,11 +863,8 @@ const clawieTalkiePlugin = {
     if (!existingKey) {
       const generated = "sk-ct-" + randomBytes(16).toString("hex");
       activeSecretKey = generated;
-      api.logger.info(
-        "[clawietalkie] Auto-generated secret key (in-memory). Run 'openclaw clawietalkie-set-key " +
-          generated +
-          "' to persist it.",
-      );
+      persistSecretKey(api, generated);
+      api.logger.info("[clawietalkie] Auto-generated and persisted secret key.");
     } else {
       activeSecretKey = existingKey;
     }
@@ -1134,45 +1286,26 @@ const clawieTalkiePlugin = {
       name: "clawietalkie_rotate_secret_key",
       label: "Rotate ClawieTalkie Secret Key",
       description:
-        "Generates a new ClawieTalkie secret key, replacing the old one. All connected devices will need to update their key. Tell the user to run 'openclaw clawietalkie-set-key <key>' to persist it across restarts.",
+        "Generates a new ClawieTalkie secret key, replacing the old one. All connected devices will need to update their key.",
       parameters: { type: "object", properties: {} } as any,
       async execute(): Promise<any> {
         const newKey = "sk-ct-" + randomBytes(16).toString("hex");
         activeSecretKey = newKey;
-        api.logger.info("[clawietalkie] secret key rotated (in-memory)");
+        await persistSecretKey(api, newKey);
+        api.logger.info("[clawietalkie] secret key rotated and persisted");
         return {
           content: [
             {
               type: "text",
-              text: `Secret key rotated. New key: ${newKey}\n\nAll devices must update their key to reconnect.\nTo persist across restarts, run: openclaw clawietalkie-set-key ${newKey}`,
+              text: `Secret key rotated and persisted. New key: ${newKey}\n\nAll devices must update their key to reconnect.`,
             },
           ],
         };
       },
     });
 
-    // ──────────────────────────────────────────────────────
-    //  CLI Command: openclaw clawietalkie-set-key <key>
-    // ──────────────────────────────────────────────────────
-    api.registerCli(
-      ({ program }: any) => {
-        program
-          .command("clawietalkie-set-key")
-          .description("Set or rotate the ClawieTalkie secret key")
-          .argument("<key>", "The secret key value (e.g. sk-ct-...)")
-          .action(async (key: string) => {
-            console.log(
-              `Setting plugins.entries.clawietalkie.config.secretKey = ${key}`,
-            );
-            activeSecretKey = key;
-            console.log("Secret key updated. Restart the gateway to apply.");
-          });
-      },
-      { commands: ["clawietalkie-set-key"] },
-    );
-
     api.logger.info(
-      "[clawietalkie] Plugin ready (routes: /clawietalkie/talk, /clawietalkie/pending, /clawietalkie/register; tools: clawietalkie_send, clawietalkie_get_secret_key, clawietalkie_rotate_secret_key; cli: clawietalkie-set-key)",
+      "[clawietalkie] Plugin ready (routes: /clawietalkie/talk, /clawietalkie/pending, /clawietalkie/register; tools: clawietalkie_send, clawietalkie_get_secret_key, clawietalkie_rotate_secret_key)",
     );
   },
 };

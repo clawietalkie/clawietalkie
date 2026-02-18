@@ -8,12 +8,26 @@
     "properties": {
       "secretKey": { "type": "string", "description": "Secret key for ClawieTalkie app authentication (Bearer token). Auto-generated on first run if empty." },
       "voicePrompt": { "type": "string", "description": "System prompt prepended to transcribed speech before sending to the agent. Controls response style (length, format, etc.)." },
-      "agentName": { "type": "string", "description": "Display name shown on the device when a voice message arrives (e.g. in the iOS PTT UI). Defaults to 'main'." }
+      "agentName": { "type": "string", "description": "Display name shown on the device when a voice message arrives (e.g. in the iOS PTT UI). Defaults to 'main'." },
+      "stt": {
+        "type": "object",
+        "description": "Speech-to-text provider config. If not set, falls back to env vars (ELEVENLABS_API_KEY, OPENAI_API_KEY, etc.).",
+        "properties": {
+          "provider": { "type": "string", "description": "Provider name: elevenlabs, openai, groq, or deepgram." },
+          "apiKey": { "type": "string", "description": "API key for the STT provider." },
+          "baseUrl": { "type": "string", "description": "Base URL override (e.g. for custom routers). Uses provider default if omitted." },
+          "model": { "type": "string", "description": "Model override. Uses provider default if omitted." }
+        }
+      }
     }
   },
   "uiHints": {
     "secretKey": { "label": "API Key", "sensitive": true },
     "voicePrompt": { "label": "Voice Prompt", "placeholder": "You MUST reply in ONE short sentence..." },
-    "agentName": { "label": "Sender Name", "placeholder": "Clawie" }
+    "agentName": { "label": "Sender Name", "placeholder": "Clawie" },
+    "stt.provider": { "label": "STT Provider", "placeholder": "elevenlabs" },
+    "stt.apiKey": { "label": "STT API Key", "sensitive": true },
+    "stt.baseUrl": { "label": "STT Base URL", "placeholder": "https://api.elevenlabs.io/v1" },
+    "stt.model": { "label": "STT Model", "placeholder": "scribe_v1" }
   }
 }
