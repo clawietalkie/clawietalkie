@@ -2,5 +2,10 @@
   "id": "clawietalkie",
   "skills": ["skills/clawietalkie"],
   "name": "ClawieTalkie",
-  "description": "Walkie-talkie voice interface — relays audio between the ClawieTalkie app and your OpenClaw agent."
+  "description": "Walkie-talkie voice interface — relays audio between the ClawieTalkie app and your OpenClaw agent.",
+  "configSchema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  }
 }
