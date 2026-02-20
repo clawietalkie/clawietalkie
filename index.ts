@@ -702,7 +702,7 @@ async function queueMessageAndPush(
             device.pushToken!,
             jwt,
             apns.config.bundleId,
-            { aps: {}, agentName: device.agentName || getAgentName(api) },
+            { aps: {}, agentName: device.agentName || "main" },
             api.logger,
             apns.config.environment || "sandbox",
             "pushtotalk",
@@ -769,13 +769,6 @@ function verifyAuth(req: IncomingMessage, api: any): boolean {
   return token === secretKey;
 }
 
-function getAgentName(api: any): string {
-  return (
-    api.pluginConfig?.agentName ||
-    api.config?.plugins?.entries?.clawietalkie?.config?.agentName ||
-    "main"
-  );
-}
 
 const DEFAULT_VOICE_PROMPT =
   "[CLAWIETALKIE — You MUST reply in ONE short sentence, MAX 15 words. No emojis. No special characters. No quotes. Plain spoken text ONLY. Do NOT use tools.] ";

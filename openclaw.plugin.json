@@ -7,12 +7,10 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "voicePrompt": { "type": "string", "description": "System prompt prepended to transcribed speech before sending to the agent. Controls response style (length, format, etc.)." },
-      "agentName": { "type": "string", "description": "Display name shown on the device when a voice message arrives (e.g. in the iOS PTT UI). Defaults to 'main'." }
+      "voicePrompt": { "type": "string", "description": "System prompt prepended to transcribed speech before sending to the agent. Controls response style (length, format, etc.)." }
     }
   },
   "uiHints": {
-    "voicePrompt": { "label": "Voice Prompt", "placeholder": "You MUST reply in ONE short sentence..." },
-    "agentName": { "label": "Sender Name", "placeholder": "Clawie" }
+    "voicePrompt": { "label": "Voice Prompt", "placeholder": "You MUST reply in ONE short sentence..." }
   }
 }
