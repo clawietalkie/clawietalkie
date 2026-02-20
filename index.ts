@@ -324,7 +324,8 @@ async function transcribeAudio(
 
   const vars = api.config?.env?.vars;
   const provider = model.provider?.toLowerCase() || "openai";
-  const envKey = PROVIDER_ENV_KEYS[provider] || provider.toUpperCase() + "_API_KEY";
+  const envKey =
+    PROVIDER_ENV_KEYS[provider] || provider.toUpperCase() + "_API_KEY";
   const apiKey = model.apiKey || vars?.[envKey] || getEnvVar(api, envKey);
   if (!apiKey) {
     throw new Error(
@@ -769,16 +770,7 @@ function verifyAuth(req: IncomingMessage, api: any): boolean {
   return token === secretKey;
 }
 
-
-const DEFAULT_VOICE_PROMPT =
-  "[CLAWIETALKIE — You MUST reply in ONE short sentence, MAX 15 words. No emojis. No special characters. No quotes. Plain spoken text ONLY. Do NOT use tools.] ";
-
-function getVoicePrompt(api: any): string {
-  const custom =
-    api.pluginConfig?.voicePrompt ||
-    api.config?.plugins?.entries?.clawietalkie?.config?.voicePrompt;
-  return custom ? custom + " " : DEFAULT_VOICE_PROMPT;
-}
+const VOICE_PROMPT = "[walkie-talkie voice message] ";
 
 function sendUnauthorized(res: ServerResponse): void {
   res.writeHead(401, { "Content-Type": "application/json" });
@@ -833,7 +825,7 @@ const clawieTalkiePlugin = {
       api.logger.info("[clawietalkie] Requesting AI response...");
       const agentResponse = await getAgentResponse(
         api,
-        getVoicePrompt(api) + transcribedText,
+        VOICE_PROMPT + transcribedText,
         agentId,
       );
       api.logger.info(

@@ -2,15 +2,5 @@
   "id": "clawietalkie",
   "skills": ["skills/clawietalkie"],
   "name": "ClawieTalkie",
-  "description": "Walkie-talkie voice interface — relays audio between the ClawieTalkie app and your OpenClaw agent.",
-  "configSchema": {
-    "type": "object",
-    "additionalProperties": false,
-    "properties": {
-      "voicePrompt": { "type": "string", "description": "System prompt prepended to transcribed speech before sending to the agent. Controls response style (length, format, etc.)." }
-    }
-  },
-  "uiHints": {
-    "voicePrompt": { "label": "Voice Prompt", "placeholder": "You MUST reply in ONE short sentence..." }
-  }
+  "description": "Walkie-talkie voice interface — relays audio between the ClawieTalkie app and your OpenClaw agent."
 }
