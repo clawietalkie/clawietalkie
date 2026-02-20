@@ -7,54 +7,11 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "secretKey": { "type": "string", "description": "Secret key for ClawieTalkie app authentication (Bearer token). Auto-generated on first run if empty." },
-      "gatewayUrl": { "type": "string", "description": "External gateway URL (e.g. https://say26.com). Used to generate setup deep links for the ClawieTalkie app." },
       "voicePrompt": { "type": "string", "description": "System prompt prepended to transcribed speech before sending to the agent. Controls response style (length, format, etc.)." },
-      "agentName": { "type": "string", "description": "Display name shown on the device when a voice message arrives (e.g. in the iOS PTT UI). Defaults to 'main'." },
-      "stt": {
-        "type": "object",
-        "description": "Speech-to-text config. Set 'provider' and configure that provider's section. Falls back to env vars if not set.",
-        "properties": {
-          "provider": { "type": "string", "description": "Provider name: elevenlabs, openai, groq, or deepgram." },
-          "elevenlabs": {
-            "type": "object",
-            "properties": {
-              "apiKey": { "type": "string" },
-              "baseUrl": { "type": "string" },
-              "model": { "type": "string" }
-            }
-          },
-          "openai": {
-            "type": "object",
-            "properties": {
-              "apiKey": { "type": "string" },
-              "baseUrl": { "type": "string" },
-              "model": { "type": "string" }
-            }
-          },
-          "groq": {
-            "type": "object",
-            "properties": {
-              "apiKey": { "type": "string" },
-              "baseUrl": { "type": "string" },
-              "model": { "type": "string" }
-            }
-          },
-          "deepgram": {
-            "type": "object",
-            "properties": {
-              "apiKey": { "type": "string" },
-              "baseUrl": { "type": "string" },
-              "model": { "type": "string" }
-            }
-          }
-        }
-      }
+      "agentName": { "type": "string", "description": "Display name shown on the device when a voice message arrives (e.g. in the iOS PTT UI). Defaults to 'main'." }
     }
   },
   "uiHints": {
-    "secretKey": { "label": "Secret Key", "sensitive": true },
-    "gatewayUrl": { "label": "Gateway URL", "placeholder": "https://say26.com" },
     "voicePrompt": { "label": "Voice Prompt", "placeholder": "You MUST reply in ONE short sentence..." },
     "agentName": { "label": "Sender Name", "placeholder": "Clawie" }
   }
