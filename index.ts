@@ -999,8 +999,8 @@ const clawieTalkiePlugin = {
               )
             : messages[0];
           if (!pending) {
-            res.writeHead(404, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "No pending audio" }));
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end("null");
             return;
           }
 
@@ -1014,12 +1014,13 @@ const clawieTalkiePlugin = {
               await saveMessages(messages);
             }
 
-            res.writeHead(200, {
-              "Content-Type": pending.contentType,
-              "Content-Length": String(audioBuffer.length),
-              "X-Message-Id": pending.id,
-            });
-            res.end(audioBuffer);
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({
+              id: pending.id,
+              audio: audioBuffer.toString("base64"),
+              contentType: pending.contentType,
+              text: pending.text || null,
+            }));
           } catch (e: any) {
             res.writeHead(500, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: e.message || String(e) }));
@@ -1050,6 +1051,21 @@ const clawieTalkiePlugin = {
           res.writeHead(405, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: "Method not allowed" }));
         }
+      },
+    });
+
+    // ──────────────────────────────────────────────────────
+    //  HTTP Route: GET /clawietalkie/verify
+    // ──────────────────────────────────────────────────────
+    api.registerHttpRoute({
+      path: "/clawietalkie/verify",
+      async handler(req: IncomingMessage, res: ServerResponse) {
+        if (!verifyAuth(req, api)) {
+          sendUnauthorized(res);
+          return;
+        }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
       },
     });
 
@@ -1247,7 +1263,7 @@ const clawieTalkiePlugin = {
     */
 
     api.logger.info(
-      "[clawietalkie] Plugin ready (routes: /clawietalkie/talk, /clawietalkie/pending, /clawietalkie/register; tools: clawietalkie_send, clawietalkie_get_secret_key)",
+      "[clawietalkie] Plugin ready (routes: /clawietalkie/talk, /clawietalkie/pending, /clawietalkie/verify, /clawietalkie/register; tools: clawietalkie_send, clawietalkie_get_secret_key)",
     );
   },
 };
