@@ -43,5 +43,5 @@ Set via `openclaw config set plugins.entries.clawietalkie.config.<key> <value>`:
 
 ## Requirements
 
-- OpenClaw agent with STT (ElevenLabs or OpenAI Whisper) and TTS configured
+- **TTS and STT must both be configured** in your OpenClaw gateway settings — the plugin uses your existing providers for speech-to-text (to transcribe your voice) and text-to-speech (to generate the agent's voice response)
 - ClawieTalkie app ([iOS](https://apps.apple.com/app/clawietalkie) / [macOS](https://github.com/clawietalkie/clawietalkie/releases))
