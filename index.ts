@@ -257,6 +257,7 @@ const PROVIDER_ENV_KEYS: Record<string, string> = {
   openai: "OPENAI_API_KEY",
   groq: "GROQ_API_KEY",
   deepgram: "DEEPGRAM_API_KEY",
+  elevenlabs: "ELEVENLABS_API_KEY",
 };
 
 /** Call the OpenAI-compatible /audio/transcriptions endpoint. */
@@ -309,6 +310,51 @@ async function transcribeOpenAiCompatibleAudio(opts: {
   }
 }
 
+/** Call the ElevenLabs /v1/speech-to-text endpoint. */
+async function transcribeElevenLabs(opts: {
+  buffer: Buffer;
+  fileName: string;
+  apiKey: string;
+  model?: string;
+  languageCode?: string;
+  timeoutMs?: number;
+}): Promise<string> {
+  const url = "https://api.elevenlabs.io/v1/speech-to-text";
+
+  const form = new FormData();
+  const blob = new Blob([new Uint8Array(opts.buffer)], {
+    type: "application/octet-stream",
+  });
+  form.append("file", blob, opts.fileName || "audio.m4a");
+  form.append("model_id", opts.model || "scribe_v2");
+  if (opts.languageCode) form.append("language_code", opts.languageCode);
+
+  const controller = new AbortController();
+  const timeout = opts.timeoutMs || 30000;
+  const timer = setTimeout(() => controller.abort(), timeout);
+
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "xi-api-key": opts.apiKey },
+      body: form,
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      const detail = await res.text();
+      throw new Error(`STT HTTP ${res.status}: ${detail}`);
+    }
+
+    const data = (await res.json()) as any;
+    const text = data.text?.trim();
+    if (!text) throw new Error("STT response missing text");
+    return text;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function transcribeAudio(
   api: any,
   audioBuffer: Buffer,
@@ -339,15 +385,27 @@ async function transcribeAudio(
     `[clawietalkie] STT via ${provider} (${model.baseUrl || "default"}, model=${model.model || "default"}${language ? ", lang=" + language : ""})`,
   );
 
-  const text = await transcribeOpenAiCompatibleAudio({
-    buffer: audioBuffer,
-    fileName,
-    apiKey,
-    baseUrl: model.baseUrl,
-    model: model.model,
-    language,
-    timeoutMs: 30000,
-  });
+  let text: string;
+  if (provider === "elevenlabs") {
+    text = await transcribeElevenLabs({
+      buffer: audioBuffer,
+      fileName,
+      apiKey,
+      model: model.model,
+      languageCode: language,
+      timeoutMs: 30000,
+    });
+  } else {
+    text = await transcribeOpenAiCompatibleAudio({
+      buffer: audioBuffer,
+      fileName,
+      apiKey,
+      baseUrl: model.baseUrl,
+      model: model.model,
+      language,
+      timeoutMs: 30000,
+    });
+  }
 
   api.logger.info("[clawietalkie] STT result: " + (text || "").slice(0, 200));
   return text;
@@ -778,6 +836,23 @@ function sendUnauthorized(res: ServerResponse): void {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Check that plugin tools are visible to the agent                  */
+/* ------------------------------------------------------------------ */
+
+function checkToolsAlsoAllow(api: any) {
+  const alsoAllow: string[] | undefined = api.config?.tools?.alsoAllow;
+  if (Array.isArray(alsoAllow) && alsoAllow.includes("clawietalkie")) return;
+
+  const profile = api.config?.tools?.profile;
+  if (profile && profile !== "full") {
+    api.logger.warn(
+      `[clawietalkie] tools.profile is "${profile}" which may hide plugin tools from the agent. ` +
+        "Run: openclaw config set tools.alsoAllow '[\"clawietalkie\"]' && openclaw gateway restart",
+    );
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /*  Plugin                                                            */
 /* ------------------------------------------------------------------ */
 
@@ -800,6 +875,9 @@ const clawieTalkiePlugin = {
       activeSecretKey = existingKey;
     }
     api.logger.info("[clawietalkie] Secret key: " + activeSecretKey);
+
+    // Warn if tools.profile may hide plugin tools from the agent
+    checkToolsAlsoAllow(api);
 
     /** STT → AI → TTS pipeline. Returns result for caller to deliver. */
     async function processTalkAudio(
@@ -876,6 +954,7 @@ const clawieTalkiePlugin = {
     // ──────────────────────────────────────────────────────
     api.registerHttpRoute({
       path: "/clawietalkie/talk",
+      auth: "plugin",
       async handler(req: IncomingMessage, res: ServerResponse) {
         if (req.method !== "POST") {
           res.writeHead(405, { "Content-Type": "application/json" });
@@ -971,6 +1050,7 @@ const clawieTalkiePlugin = {
     // ──────────────────────────────────────────────────────
     api.registerHttpRoute({
       path: "/clawietalkie/pending",
+      auth: "plugin",
       async handler(req: IncomingMessage, res: ServerResponse) {
         if (!verifyAuth(req, api)) {
           sendUnauthorized(res);
@@ -1059,6 +1139,7 @@ const clawieTalkiePlugin = {
     // ──────────────────────────────────────────────────────
     api.registerHttpRoute({
       path: "/clawietalkie/verify",
+      auth: "plugin",
       async handler(req: IncomingMessage, res: ServerResponse) {
         if (!verifyAuth(req, api)) {
           sendUnauthorized(res);
@@ -1074,6 +1155,7 @@ const clawieTalkiePlugin = {
     // ──────────────────────────────────────────────────────
     api.registerHttpRoute({
       path: "/clawietalkie/register",
+      auth: "plugin",
       async handler(req: IncomingMessage, res: ServerResponse) {
         if (req.method !== "POST") {
           res.writeHead(405, { "Content-Type": "application/json" });
