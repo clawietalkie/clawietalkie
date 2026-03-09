@@ -20,26 +20,18 @@ openclaw plugins install ./clawietalkie
 
 ## Configure the app
 
-On first run the plugin auto-generates a secret key. Retrieve it with:
-
-```bash
-openclaw config get plugins.entries.clawietalkie.config.secretKey
-```
+On first run the plugin auto-generates a secret key. Retrieve it via the `clawietalkie_get_secret_key` agent tool, or check the gateway logs on startup.
 
 Open ClawieTalkie on your device and enter:
 
 - **Gateway URL** — your OpenClaw gateway address (e.g. `https://your-server.com`)
 - **Secret Key** — the plugin's secret key (see above)
 
-## Config options
+## Secret key
 
-Set via `openclaw config set plugins.entries.clawietalkie.config.<key> <value>`:
+The plugin auto-generates a secret key on first run and stores it in its `data/` directory. Retrieve it via the `clawietalkie_get_secret_key` agent tool, or check the gateway logs on startup. To rotate it, use the `clawietalkie_rotate_secret_key` agent tool.
 
-| Key           | Description                                                                  |
-| ------------- | ---------------------------------------------------------------------------- |
-| `secretKey`   | Bearer token for app authentication (auto-generated on first run)            |
-| `voicePrompt` | System prompt prepended to transcribed speech (controls response style)      |
-| `agentName`   | Display name shown on the device for push notifications (defaults to "main") |
+There are no user-configurable plugin options — the plugin reads STT/TTS settings from the gateway config directly.
 
 ## Requirements
 
